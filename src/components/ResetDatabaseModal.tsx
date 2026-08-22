@@ -135,7 +135,7 @@ export const ResetDatabaseModal: React.FC<ResetDatabaseModalProps> = ({
             </div>
 
             <p className="text-xs text-slate-400 leading-relaxed">
-              Wipes all today's transactions, attendances, and expenses so all revenue, cash, and attendance counters reset to zero ($0.00). Keeps registered members & staff intact.
+              Wipes all data including transactions, attendances, expenses, and registered members so all revenue, cash, attendance, and member counters reset completely to zero ($0.00).
             </p>
 
             <button
