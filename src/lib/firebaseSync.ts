@@ -1934,21 +1934,37 @@ export async function dbClearAllDataToZero(businessName: string) {
   const cleanName = (businessName || getStoredBusinessName() || 'Binti Gym').trim();
   const bizRef = getBusinessDocRef(cleanName);
 
-  // Clear active shift
+  // Clear active shift locally and in storage
   saveStoredActiveShift(null, cleanName);
-  await setDoc(bizRef, { activeShift: null, updatedAt: serverTimestamp() }, { merge: true });
+  try {
+    localStorage.removeItem('gym_data_store_v1');
+    localStorage.removeItem('gym_terminal_notifications');
+  } catch {}
 
-  // Clear all transactional subcollections
+  // Update root business document to wipe activeShift and reset metadata
+  await setDoc(
+    bizRef,
+    {
+      activeShift: null,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  // Wipe ALL subcollections in Firestore (members, attendance, sales, expenses, shifts, events)
   await Promise.all([
+    clearSubcollectionDocs(getBusinessCollectionRef(cleanName, 'members')),
     clearSubcollectionDocs(getBusinessCollectionRef(cleanName, 'attendance')),
     clearSubcollectionDocs(getBusinessCollectionRef(cleanName, 'sales')),
     clearSubcollectionDocs(getBusinessCollectionRef(cleanName, 'expenses')),
+    clearSubcollectionDocs(getBusinessCollectionRef(cleanName, 'shifts')),
+    clearSubcollectionDocs(getBusinessCollectionRef(cleanName, 'events')),
   ]);
 
   await dbBroadcastEvent(cleanName, {
     type: 'reset',
-    title: '🧹 Cleared to Zero',
-    message: 'All today transactions, attendances, and expenses have been reset to zero.',
+    title: '🧹 Cleared All Data to Zero',
+    message: 'All transactions, attendances, expenses, and registered members have been completely wiped to zero.',
     timestamp: getBruneiFormattedTime(new Date(), true),
   });
 }
