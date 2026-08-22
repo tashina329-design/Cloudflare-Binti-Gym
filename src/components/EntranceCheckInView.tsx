@@ -414,13 +414,18 @@ export const EntranceCheckInView: React.FC<EntranceCheckInViewProps> = ({
                     </span>
                   </div>
                   <input
-                    type="tel"
+                    type="text"
+                    inputMode="none"
                     value={memberPhone}
                     onFocus={() => setActiveTarget('memberPhone')}
                     onChange={(e) => setMemberPhone(e.target.value)}
                     placeholder="Enter phone number..."
                     required
-                    className="w-full bg-slate-950 border-2 border-emerald-500/50 focus:border-emerald-400 rounded-xl px-4 py-3 sm:py-4 text-center text-xl sm:text-2xl font-black text-slate-100 placeholder-slate-600 focus:outline-none tracking-widest font-mono shadow-inner transition-all"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck="false"
+                    className="w-full bg-slate-950 border-2 border-emerald-500/50 focus:border-emerald-400 rounded-xl px-4 py-3 sm:py-4 text-center text-xl sm:text-2xl font-black text-slate-100 placeholder-slate-600 focus:outline-none tracking-widest font-mono shadow-inner transition-all cursor-pointer"
                   />
                 </div>
 
@@ -473,13 +478,18 @@ export const EntranceCheckInView: React.FC<EntranceCheckInViewProps> = ({
                       <span className="text-[9px] text-sky-400 font-semibold uppercase tracking-wider">Required</span>
                     </label>
                     <input
-                      type="tel"
+                      type="text"
+                      inputMode="none"
                       required
                       value={walkinPhone}
                       onFocus={() => setActiveTarget('walkinPhone')}
                       onChange={(e) => setWalkinPhone(e.target.value)}
                       placeholder="e.g. 8899001"
-                      className={`w-full h-10 sm:h-11 bg-slate-950 border rounded-lg sm:rounded-xl px-3 text-xs sm:text-sm text-slate-100 placeholder-slate-600 focus:outline-none font-mono transition-all ${
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck="false"
+                      className={`w-full h-10 sm:h-11 bg-slate-950 border rounded-lg sm:rounded-xl px-3 text-xs sm:text-sm text-slate-100 placeholder-slate-600 focus:outline-none font-mono transition-all cursor-pointer ${
                         activeTarget === 'walkinPhone' ? 'border-sky-500 ring-1 ring-sky-500/30' : 'border-slate-800 focus:border-sky-500'
                       }`}
                     />
