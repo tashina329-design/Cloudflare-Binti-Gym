@@ -1,0 +1,176 @@
+{
+  "entities": {
+    "Business": {
+      "title": "Business Account",
+      "description": "Gym business organization settings, PIN credentials, and active duty shift state",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "pin": { "type": "string" },
+        "staffPin": { "type": "string" },
+        "activeShift": { "type": "object" },
+        "availableStores": { "type": "array" },
+        "lastEvent": { "type": "object" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "pin"]
+    },
+    "Member": {
+      "title": "Gym Member",
+      "description": "Registered gym member with membership status, plan type, and expiration dates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "memberId": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "plan": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "price": { "type": "number" },
+        "status": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["memberId", "name", "phone", "plan"]
+    },
+    "Attendance": {
+      "title": "Attendance Check-In",
+      "description": "Terminal check-in log record for a member or walk-in guest",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "memberId": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "plan": { "type": "string" },
+        "status": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["timestamp", "name"]
+    },
+    "Sale": {
+      "title": "Sale Transaction",
+      "description": "POS item sale, walk-in pass, class fee, personal training package, or membership fee",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "category": { "type": "string" },
+        "customer": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "amount": { "type": "number" },
+        "staff": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["timestamp", "category", "amount", "paymentMethod"]
+    },
+    "Expense": {
+      "title": "Expense Record",
+      "description": "Operational expense or PT payout logged by duty staff",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "amount": { "type": "number" },
+        "staff": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["timestamp", "category", "amount", "paymentMethod"]
+    },
+    "Staff": {
+      "title": "Registered Staff",
+      "description": "Staff member with terminal access PIN code",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "pin": { "type": "string" },
+        "registeredAt": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "pin"]
+    },
+    "Shift": {
+      "title": "Duty Shift",
+      "description": "Staff duty shift log with float tracking and cash totals",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "staffId": { "type": "string" },
+        "staffName": { "type": "string" },
+        "shiftTitle": { "type": "string" },
+        "startTime": { "type": "string" },
+        "startTimestamp": { "type": "number" },
+        "endTime": { "type": "string" },
+        "startingFloat": { "type": "number" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "staffName"]
+    },
+    "GymRegistry": {
+      "title": "Gym Store Registry",
+      "description": "Global registry of available gym store names and broadcast events",
+      "type": "object",
+      "properties": {
+        "stores": { "type": "array" },
+        "lastEvent": { "type": "object" },
+        "updatedAt": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "/businesses/{businessId}": {
+      "schema": { "$ref": "#/entities/Business" },
+      "description": "Gym business organization configuration and active shift state"
+    },
+    "/businesses/{businessId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/Member" },
+      "description": "Individual member records in business subcollection"
+    },
+    "/businesses/{businessId}/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/Attendance" },
+      "description": "Individual attendance check-in logs in business subcollection"
+    },
+    "/businesses/{businessId}/sales/{saleId}": {
+      "schema": { "$ref": "#/entities/Sale" },
+      "description": "Individual sales and transaction records in business subcollection"
+    },
+    "/businesses/{businessId}/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Individual operational expense records in business subcollection"
+    },
+    "/businesses/{businessId}/staff/{staffId}": {
+      "schema": { "$ref": "#/entities/Staff" },
+      "description": "Staff access credentials in business subcollection"
+    },
+    "/businesses/{businessId}/shifts/{shiftId}": {
+      "schema": { "$ref": "#/entities/Shift" },
+      "description": "Duty shifts history in business subcollection"
+    },
+    "/gym/{docId}": {
+      "schema": { "$ref": "#/entities/GymRegistry" },
+      "description": "Global registry of registered businesses"
+    }
+  }
+}
+

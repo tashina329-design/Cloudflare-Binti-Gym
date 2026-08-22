@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en" class="dark bg-slate-950 text-slate-100">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>BINTI Gym</title>
+    
+    <!-- PWA Primary Manifest -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    
+    <!-- Theme & Status Bar Colors -->
+    <meta name="theme-color" content="#020617" />
+    <meta name="msapplication-TileColor" content="#020617" />
+    <meta name="msapplication-TileImage" content="/icon-192.png" />
+    
+    <!-- Web App & Installation Capabilities -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="BINTI Gym" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="BINTI Gym" />
+    <meta name="description" content="BINTI Gym - Staff POS & Management Terminal, Member Check-ins, and Live Operations" />
+
+    <!-- Icons & Favicons -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="mask-icon" href="/favicon.svg" color="#10b981" />
+    <script>
+      // Global error suppression for external browser extensions (MetaMask, Web3 wallets, Chrome extensions)
+      (function() {
+        function isExtensionOrWeb3Error(msg) {
+          if (!msg) return false;
+          var str = String(msg).toLowerCase();
+          return (
+            str.includes('metamask') ||
+            str.includes('failed to connect to metamask') ||
+            str.includes('ethereum') ||
+            str.includes('web3') ||
+            str.includes('chrome-extension://') ||
+            str.includes('moz-extension://') ||
+            str.includes('safari-extension://') ||
+            str.includes('evm') ||
+            str.includes('wallet')
+          );
+        }
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event.reason;
+          var msg = (reason && (reason.message || reason.stack || reason)) || '';
+          if (isExtensionOrWeb3Error(msg)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return false;
+          }
+        }, true);
+
+        window.addEventListener('error', function(event) {
+          var msg = event.message || (event.error && event.error.message) || '';
+          var filename = event.filename || '';
+          if (isExtensionOrWeb3Error(msg) || isExtensionOrWeb3Error(filename)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return false;
+          }
+        }, true);
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-950 text-slate-100 min-h-screen antialiased">
+    <div id="root" class="bg-slate-950 min-h-screen"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
