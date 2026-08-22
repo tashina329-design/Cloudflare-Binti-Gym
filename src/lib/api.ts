@@ -268,5 +268,11 @@ export async function apiFetch<T = any>(url: string, options?: RequestInit): Pro
     return { success: true } as unknown as T;
   }
 
+  // Clear All Data to Zero (Fresh Start)
+  if (cleanUrl.endsWith('/api/clear-zero')) {
+    await dbClearAllDataToZero(currentStore);
+    return { success: true } as unknown as T;
+  }
+
   return { success: true } as unknown as T;
 }
