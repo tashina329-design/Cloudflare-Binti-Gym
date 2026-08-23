@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { User } from 'firebase/auth';
 import {
   FileSpreadsheet,
   RefreshCw,
@@ -25,13 +24,18 @@ import {
   Settings2,
   Check,
   Copy,
-  Globe
+  Globe,
+  Download,
+  ArrowDownToLine,
+  Layers,
+  HelpCircle
 } from 'lucide-react';
 import {
   initAuth,
   googleSignIn,
   googleSignOut,
-  getAccessToken
+  getAccessToken,
+  AuthUser
 } from '../../lib/googleAuth';
 import {
   findOrCreateGymSpreadsheet,
@@ -40,11 +44,19 @@ import {
   extractSpreadsheetIdFromInput,
   syncDataToGoogleSheets,
   fetchMembersFromGoogleSheets,
+  fetchSalesFromGoogleSheets,
+  fetchExpensesFromGoogleSheets,
+  fetchAttendanceFromGoogleSheets,
+  fetchAllLogsFromGoogleSheets,
   calculateDailySummaryMetrics,
   SpreadsheetInfo
 } from '../../lib/sheetsSync';
 import {
   dbBatchUpsertMembers,
+  dbBatchUpsertSales,
+  dbBatchUpsertExpenses,
+  dbBatchUpsertAttendance,
+  dbBatchImportAllHistoricalLogs,
   dbGetStoreSpreadsheet,
   dbSaveStoreSpreadsheet,
   dbClearStoreSpreadsheet
@@ -59,14 +71,20 @@ interface GoogleSheetsTabProps {
 
 export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData, currentStore, onMembersImported }) => {
   const effectiveStore = (currentStore || 'Binti Gym').trim();
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [spreadsheet, setSpreadsheet] = useState<SpreadsheetInfo | null>(null);
   const [isLoadingSpreadsheet, setIsLoadingSpreadsheet] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isPullingAll, setIsPullingAll] = useState(false);
   const [isPullingMembers, setIsPullingMembers] = useState(false);
+  const [isPullingSales, setIsPullingSales] = useState(false);
+  const [isPullingExpenses, setIsPullingExpenses] = useState(false);
+  const [isPullingAttendance, setIsPullingAttendance] = useState(false);
   const [showConfigOptions, setShowConfigOptions] = useState(false);
+  const [activeGuideTab, setActiveGuideTab] = useState<'sales' | 'expenses' | 'attendance' | 'members'>('sales');
+  const [copiedTemplate, setCopiedTemplate] = useState<string | null>(null);
   const [customSheetInput, setCustomSheetInput] = useState('');
   const [isSavingCustomSheet, setIsSavingCustomSheet] = useState(false);
   const [isCreatingNewSheet, setIsCreatingNewSheet] = useState(false);
@@ -79,16 +97,8 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const [copiedDomain, setCopiedDomain] = useState(false);
-  const [showDomainHelp, setShowDomainHelp] = useState(false);
 
   const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
-  const isVercelOrCustomDomain = Boolean(
-    currentHost &&
-    currentHost !== 'localhost' &&
-    currentHost !== '127.0.0.1' &&
-    !currentHost.includes('firebaseapp.com') &&
-    !currentHost.includes('web.app')
-  );
 
   const handleCopyDomain = () => {
     if (currentHost) {
@@ -96,6 +106,23 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setCopiedDomain(true);
       setTimeout(() => setCopiedDomain(false), 3000);
     }
+  };
+
+  const handleCopyTemplateHeaders = (tabType: 'sales' | 'expenses' | 'attendance' | 'members') => {
+    let text = '';
+    if (tabType === 'sales') {
+      text = "Date & Time\tStaff on Duty\tCategory\tCustomer / Guest\tPhone Number\tPayment Method\tAmount ($)\n2026-08-20 09:30 AM\tSystem Admin\tPOS\tEnergy Bar & Mineral Water\t8712345\tCash\t8.00\n2026-08-20 10:00 AM\tCoach Alex\tWalk-In\tMichael Lee (Walk-In Pass)\t8889900\tCash\t10.00\n2026-08-20 11:00 AM\tCoach Alex\tPersonal Training\tClient: Ahmad Daniel | 5 Sessions\t8123456\tBaiduri Card\t150.00";
+    } else if (tabType === 'expenses') {
+      text = "Date & Time\tStaff on Duty\tCategory\tDescription\tPayment Method\tAmount ($)\n2026-08-20 10:30 AM\tSystem Admin\tUtilities\tMineral Water & Filter Restock\tCash\t35.00\n2026-08-20 02:00 PM\tSystem Admin\tMaintenance\tGym Sanitizer & Towel Supplies\tCash\t25.00";
+    } else if (tabType === 'attendance') {
+      text = "Check-In Date & Time\tMember / Guest Name\tPhone Number\tPlan / Activity\tCheck-In Status\n2026-08-20 08:30 AM\tAhmad Daniel\t8123456\tStandard Monthly\tActive\n2026-08-20 10:00 AM\tMichael Lee\t8889900\tWalk-In Pass\tActive";
+    } else {
+      text = "Member ID\tFull Name\tPhone\tPlan\tStart Date\tEnd Date\tStatus\nMEM-100201\tJessica Tan\t8991122\tStandard Monthly\t2026-08-01\t2026-09-01\tActive\nMEM-100202\tAhmad Daniel\t8123456\tAnnual VIP\t2026-01-01\t2027-01-01\tActive";
+    }
+
+    navigator.clipboard.writeText(text);
+    setCopiedTemplate(tabType);
+    setTimeout(() => setCopiedTemplate(null), 3000);
   };
 
   // Compute live Daily Summary Report metrics
@@ -297,11 +324,134 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
     }
   };
 
-  const handlePullMembers = async () => {
-    let activeToken = token;
-    if (!activeToken) {
-      activeToken = getAccessToken();
+  // 1-Click Import of ALL logs from Google Sheets (Sales, Expenses, Attendance, Members)
+  const handlePullAllLogs = async () => {
+    let activeToken = token || getAccessToken();
+    if (!activeToken || !spreadsheet) {
+      setErrorMsg('Please connect your Google Account first.');
+      return;
     }
+
+    setIsPullingAll(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    try {
+      const allData = await fetchAllLogsFromGoogleSheets(activeToken, spreadsheet.spreadsheetId);
+      const totalRowsFound = allData.sales.length + allData.expenses.length + allData.attendance.length + allData.members.length;
+
+      if (totalRowsFound === 0) {
+        setErrorMsg('No log rows found across your Google Sheets tabs (Sales Log, Expenses Log, Check-In Log, Members Directory). Please check the tab names and data formatting.');
+        return;
+      }
+
+      const res = await dbBatchImportAllHistoricalLogs(effectiveStore, allData);
+
+      const parts: string[] = [];
+      if (allData.sales.length > 0) parts.push(`${res.sales.added} sales added (${res.sales.updated} updated)`);
+      if (allData.expenses.length > 0) parts.push(`${res.expenses.added} expenses added (${res.expenses.updated} updated)`);
+      if (allData.attendance.length > 0) parts.push(`${res.attendance.added} check-ins added (${res.attendance.updated} updated)`);
+      if (allData.members.length > 0) parts.push(`${res.members.added} members added (${res.members.updated} updated)`);
+
+      setSuccessMsg(`🎉 Successfully imported from Google Sheets into ${effectiveStore} Terminal: ${parts.join(', ')}! All logs and analytics updated in real-time.`);
+      if (onMembersImported && allData.members.length > 0) {
+        onMembersImported(allData.members);
+      }
+    } catch (err: any) {
+      console.error('Failed to import logs from Google Sheets:', err);
+      setErrorMsg(err.message || 'Failed to import logs from Google Sheets.');
+    } finally {
+      setIsPullingAll(false);
+    }
+  };
+
+  // Pull individual Sales Log
+  const handlePullSales = async () => {
+    let activeToken = token || getAccessToken();
+    if (!activeToken || !spreadsheet) {
+      setErrorMsg('Please connect your Google Account first.');
+      return;
+    }
+
+    setIsPullingSales(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    try {
+      const sales = await fetchSalesFromGoogleSheets(activeToken, spreadsheet.spreadsheetId);
+      if (sales.length === 0) {
+        setSuccessMsg('No sales rows found in "Sales Log" tab of your Google Sheet.');
+        return;
+      }
+      const res = await dbBatchUpsertSales(effectiveStore, sales);
+      setSuccessMsg(`🎉 Successfully pulled Sales Log from Google Sheet: Added ${res.added} new sales record(s) and updated ${res.updated} existing record(s) for ${effectiveStore}!`);
+    } catch (err: any) {
+      console.error('Failed to pull sales:', err);
+      setErrorMsg(err.message || 'Failed to pull Sales Log from Google Sheet.');
+    } finally {
+      setIsPullingSales(false);
+    }
+  };
+
+  // Pull individual Expenses Log
+  const handlePullExpenses = async () => {
+    let activeToken = token || getAccessToken();
+    if (!activeToken || !spreadsheet) {
+      setErrorMsg('Please connect your Google Account first.');
+      return;
+    }
+
+    setIsPullingExpenses(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    try {
+      const expenses = await fetchExpensesFromGoogleSheets(activeToken, spreadsheet.spreadsheetId);
+      if (expenses.length === 0) {
+        setSuccessMsg('No expense rows found in "Expenses Log" tab of your Google Sheet.');
+        return;
+      }
+      const res = await dbBatchUpsertExpenses(effectiveStore, expenses);
+      setSuccessMsg(`🎉 Successfully pulled Expenses Log from Google Sheet: Added ${res.added} new expense record(s) and updated ${res.updated} existing record(s) for ${effectiveStore}!`);
+    } catch (err: any) {
+      console.error('Failed to pull expenses:', err);
+      setErrorMsg(err.message || 'Failed to pull Expenses Log from Google Sheet.');
+    } finally {
+      setIsPullingExpenses(false);
+    }
+  };
+
+  // Pull individual Check-In Log
+  const handlePullAttendance = async () => {
+    let activeToken = token || getAccessToken();
+    if (!activeToken || !spreadsheet) {
+      setErrorMsg('Please connect your Google Account first.');
+      return;
+    }
+
+    setIsPullingAttendance(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    try {
+      const att = await fetchAttendanceFromGoogleSheets(activeToken, spreadsheet.spreadsheetId);
+      if (att.length === 0) {
+        setSuccessMsg('No check-in rows found in "Check-In Log" tab of your Google Sheet.');
+        return;
+      }
+      const res = await dbBatchUpsertAttendance(effectiveStore, att);
+      setSuccessMsg(`🎉 Successfully pulled Check-In Log from Google Sheet: Added ${res.added} new visit(s) and updated ${res.updated} existing record(s) for ${effectiveStore}!`);
+    } catch (err: any) {
+      console.error('Failed to pull check-ins:', err);
+      setErrorMsg(err.message || 'Failed to pull Check-In Log from Google Sheet.');
+    } finally {
+      setIsPullingAttendance(false);
+    }
+  };
+
+  // Pull Members Directory
+  const handlePullMembers = async () => {
+    let activeToken = token || getAccessToken();
     if (!activeToken || !spreadsheet) {
       setErrorMsg('Please connect your Google Account first.');
       return;
@@ -319,7 +469,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       }
 
       const res = await dbBatchUpsertMembers(effectiveStore, pulledMembers);
-      setSuccessMsg(`🎉 Successfully pulled from Google Sheets for ${effectiveStore}: Added ${res.added} new member(s) and updated ${res.updated} member(s)!`);
+      setSuccessMsg(`🎉 Successfully pulled Members Directory from Google Sheet: Added ${res.added} new member(s) and updated ${res.updated} member(s) for ${effectiveStore}!`);
       if (onMembersImported) {
         onMembersImported(pulledMembers);
       }
@@ -343,18 +493,18 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                  Google Sheets Real-Time Sync
+                  Google Sheets Two-Way Sync & Historical Importer
                 </h2>
                 <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30 flex items-center gap-1">
                   <Store className="w-3 h-3 text-emerald-400" />
                   Terminal Store: {effectiveStore}
                 </span>
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-medium border border-slate-700">
-                  Store-Isolated Sheets
+                  Two-Way Push & Pull
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Every store terminal syncs to its own dedicated Google Sheet so data from different locations never conflict or overwrite each other.
+                Put your previous records in your Google Sheet tabs (Sales Log, Expenses Log, Check-In Log, Members), then click Pull to catch everything inside your POS terminal in real-time.
               </p>
             </div>
           </div>
@@ -481,7 +631,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column: Target info & Quick stats */}
+          {/* Left Column: Target info & Quick stats & Two-way import center */}
           <div className="lg:col-span-2 space-y-6">
             {/* Spreadsheet Target Info */}
             <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
@@ -612,8 +762,8 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
                   <div className="grid grid-cols-2 gap-3 text-xs pt-1">
                     <div>
-                      <span className="text-slate-400 block text-[11px]">Synced Tabs (Latest on Top)</span>
-                      <span className="font-semibold text-slate-200">Daily Summary, Monthly Summary, Sales, Check-Ins, Members, Expenses</span>
+                      <span className="text-slate-400 block text-[11px]">Synced Tabs</span>
+                      <span className="font-semibold text-slate-200">Daily Summary, Monthly Summary, Sales Log, Check-In Log, Members Directory, Expenses Log</span>
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[11px]">Last Sync Status ({effectiveStore})</span>
@@ -629,52 +779,339 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
                 </div>
               )}
 
-              {/* Sync & Two-Way Import Controls */}
-              <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
-                <div className="flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={handleTriggerSync}
-                    disabled={isSyncing || !spreadsheet}
-                    className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md shadow-emerald-950/40 cursor-pointer"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-                    {isSyncing ? `Pushing ${effectiveStore} Data...` : `📤 Push ${effectiveStore} Data to Sheets`}
-                  </button>
+              {/* PRIMARY ACTION BUTTONS: PUSH & 1-CLICK PULL ALL */}
+              <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {/* Push Button */}
+                    <button
+                      onClick={handleTriggerSync}
+                      disabled={isSyncing || !spreadsheet}
+                      className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md shadow-emerald-950/40 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+                      {isSyncing ? `Pushing ${effectiveStore} Data...` : `📤 Push All Data to Google Sheets`}
+                    </button>
 
+                    {/* Master 1-Click Pull Button */}
+                    <button
+                      onClick={handlePullAllLogs}
+                      disabled={isPullingAll || !spreadsheet}
+                      className="px-5 py-2.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md shadow-sky-950/40 cursor-pointer"
+                    >
+                      <ArrowDownToLine className={`w-4 h-4 ${isPullingAll ? 'animate-bounce' : ''}`} />
+                      {isPullingAll ? 'Importing All Logs from Sheet...' : `📥 Pull All Previous Data (Sales, Expenses, Check-Ins, Members)`}
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-slate-400">
+                    🔒 Real-time Firestore synchronization
+                  </p>
+                </div>
+
+                {/* Individual Tab Granular Pull Buttons */}
+                <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-slate-400 font-semibold text-[11px] mr-1 flex items-center gap-1">
+                    <Layers className="w-3.5 h-3.5 text-slate-400" /> Pull Individual Log:
+                  </span>
+                  <button
+                    onClick={handlePullSales}
+                    disabled={isPullingSales || !spreadsheet}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-emerald-300 font-semibold rounded-lg text-[11px] flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <DollarSign className="w-3 h-3 text-emerald-400" />
+                    {isPullingSales ? 'Pulling...' : '📥 Pull Sales Log'}
+                  </button>
+                  <button
+                    onClick={handlePullExpenses}
+                    disabled={isPullingExpenses || !spreadsheet}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-rose-300 font-semibold rounded-lg text-[11px] flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <DollarSign className="w-3 h-3 text-rose-400" />
+                    {isPullingExpenses ? 'Pulling...' : '📥 Pull Expenses Log'}
+                  </button>
+                  <button
+                    onClick={handlePullAttendance}
+                    disabled={isPullingAttendance || !spreadsheet}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-sky-300 font-semibold rounded-lg text-[11px] flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Calendar className="w-3 h-3 text-sky-400" />
+                    {isPullingAttendance ? 'Pulling...' : '📥 Pull Check-In Log'}
+                  </button>
                   <button
                     onClick={handlePullMembers}
                     disabled={isPullingMembers || !spreadsheet}
-                    className="px-5 py-2.5 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md shadow-sky-950/40 cursor-pointer"
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-purple-300 font-semibold rounded-lg text-[11px] flex items-center gap-1.5 transition cursor-pointer"
                   >
-                    <Users className={`w-4 h-4 ${isPullingMembers ? 'animate-spin' : ''}`} />
-                    {isPullingMembers ? 'Importing from Sheet...' : `📥 Pull Members to ${effectiveStore}`}
+                    <Users className="w-3 h-3 text-purple-400" />
+                    {isPullingMembers ? 'Pulling...' : '📥 Pull Members Directory'}
                   </button>
                 </div>
+              </div>
+            </div>
 
-                <p className="text-[11px] text-slate-400">
-                  🔒 Dedicated sheet per store terminal
-                </p>
+            {/* Interactive Two-Way Import & Formatting Guide */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-sky-500/10 border border-sky-500/30 rounded-lg">
+                    <Sparkles className="w-4 h-4 text-sky-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">How to Put Previous Data into Google Sheet & Catch on Terminal</h3>
+                    <p className="text-[11px] text-slate-400">Copy header templates, paste your previous historical records into your Google Sheet, and click Pull!</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  <button
+                    onClick={() => setActiveGuideTab('sales')}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                      activeGuideTab === 'sales' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Sales Log
+                  </button>
+                  <button
+                    onClick={() => setActiveGuideTab('expenses')}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                      activeGuideTab === 'expenses' ? 'bg-rose-500 text-white' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Expenses Log
+                  </button>
+                  <button
+                    onClick={() => setActiveGuideTab('attendance')}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                      activeGuideTab === 'attendance' ? 'bg-sky-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Check-In Log
+                  </button>
+                  <button
+                    onClick={() => setActiveGuideTab('members')}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                      activeGuideTab === 'members' ? 'bg-purple-500 text-white' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Members Directory
+                  </button>
+                </div>
               </div>
 
-              {/* Two-way Member Sync Quick Guide */}
-              <div className="p-3.5 bg-sky-950/30 border border-sky-500/20 rounded-xl space-y-1.5">
-                <p className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-sky-400" />
-                  Two-Way Member Sync Supported!
-                </p>
-                <p className="text-[11px] text-slate-300 leading-relaxed">
-                  You can type new members directly into your Google Sheet under the <strong className="text-white">"Members Directory"</strong> tab.
-                  Columns: <code className="text-sky-300 bg-slate-900 px-1 py-0.5 rounded">Member ID</code> (optional), <code className="text-sky-300 bg-slate-900 px-1 py-0.5 rounded">Full Name</code>, <code className="text-sky-300 bg-slate-900 px-1 py-0.5 rounded">Phone</code>, <code className="text-sky-300 bg-slate-900 px-1 py-0.5 rounded">Plan</code>, <code className="text-sky-300 bg-slate-900 px-1 py-0.5 rounded">Start Date</code>, <code className="text-sky-300 bg-slate-900 px-1 py-0.5 rounded">End Date</code>.
-                  Then click <strong className="text-sky-400">"📥 Pull Members to {effectiveStore}"</strong> to sync them into your app!
-                </p>
-              </div>
+              {/* Guide Tab Content */}
+              {activeGuideTab === 'sales' && (
+                <div className="space-y-3 text-xs animate-in fade-in">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-slate-300">
+                      In your Google Sheet tab named <strong className="text-emerald-400">"Sales Log"</strong>, use the following columns (Row 1 is Header):
+                    </p>
+                    <button
+                      onClick={() => handleCopyTemplateHeaders('sales')}
+                      className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      {copiedTemplate === 'sales' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copiedTemplate === 'sales' ? 'Copied Template!' : 'Copy Sample Rows to Clipboard'}
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-950 font-mono text-[11px]">
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-900 text-slate-300 border-b border-slate-800 font-bold">
+                        <tr>
+                          <th className="p-2.5">A: Date & Time</th>
+                          <th className="p-2.5">B: Staff on Duty</th>
+                          <th className="p-2.5">C: Category</th>
+                          <th className="p-2.5">D: Customer / Guest</th>
+                          <th className="p-2.5">E: Phone Number</th>
+                          <th className="p-2.5">F: Payment Method</th>
+                          <th className="p-2.5">G: Amount ($)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 text-slate-400">
+                        <tr>
+                          <td className="p-2.5 text-slate-200">2026-08-20 09:30 AM</td>
+                          <td className="p-2.5">System Admin</td>
+                          <td className="p-2.5">POS</td>
+                          <td className="p-2.5">Energy Bar & Water</td>
+                          <td className="p-2.5">8712345</td>
+                          <td className="p-2.5 text-emerald-400">Cash</td>
+                          <td className="p-2.5 text-white font-bold">$8.00</td>
+                        </tr>
+                        <tr>
+                          <td className="p-2.5 text-slate-200">2026-08-20 10:00 AM</td>
+                          <td className="p-2.5">Coach Alex</td>
+                          <td className="p-2.5">Walk-In</td>
+                          <td className="p-2.5">Michael Lee (Walk-In Pass)</td>
+                          <td className="p-2.5">8889900</td>
+                          <td className="p-2.5 text-emerald-400">Cash</td>
+                          <td className="p-2.5 text-white font-bold">$10.00</td>
+                        </tr>
+                        <tr>
+                          <td className="p-2.5 text-slate-200">2026-08-20 11:00 AM</td>
+                          <td className="p-2.5">Coach Alex</td>
+                          <td className="p-2.5">Personal Training</td>
+                          <td className="p-2.5">Client: Ahmad Daniel | 5 Sessions</td>
+                          <td className="p-2.5">8123456</td>
+                          <td className="p-2.5 text-cyan-400">Baiduri Card</td>
+                          <td className="p-2.5 text-white font-bold">$150.00</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    💡 Supported Date formats: <code className="text-slate-300 bg-slate-950 px-1 py-0.5 rounded">YYYY-MM-DD HH:MM AM/PM</code>, <code className="text-slate-300 bg-slate-950 px-1 py-0.5 rounded">YYYY-MM-DD</code>, <code className="text-slate-300 bg-slate-950 px-1 py-0.5 rounded">DD/MM/YYYY HH:MM</code>. Amount can be plain number or with $.
+                  </p>
+                </div>
+              )}
+
+              {activeGuideTab === 'expenses' && (
+                <div className="space-y-3 text-xs animate-in fade-in">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-slate-300">
+                      In your Google Sheet tab named <strong className="text-rose-400">"Expenses Log"</strong>, use the following columns (Row 1 is Header):
+                    </p>
+                    <button
+                      onClick={() => handleCopyTemplateHeaders('expenses')}
+                      className="px-3 py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      {copiedTemplate === 'expenses' ? <Check className="w-3.5 h-3.5 text-rose-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copiedTemplate === 'expenses' ? 'Copied Template!' : 'Copy Sample Rows to Clipboard'}
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-950 font-mono text-[11px]">
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-900 text-slate-300 border-b border-slate-800 font-bold">
+                        <tr>
+                          <th className="p-2.5">A: Date & Time</th>
+                          <th className="p-2.5">B: Staff on Duty</th>
+                          <th className="p-2.5">C: Category</th>
+                          <th className="p-2.5">D: Description</th>
+                          <th className="p-2.5">E: Payment Method</th>
+                          <th className="p-2.5">F: Amount ($)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 text-slate-400">
+                        <tr>
+                          <td className="p-2.5 text-slate-200">2026-08-20 10:30 AM</td>
+                          <td className="p-2.5">System Admin</td>
+                          <td className="p-2.5">Utilities</td>
+                          <td className="p-2.5">Mineral Water & Filter Restock</td>
+                          <td className="p-2.5 text-emerald-400">Cash</td>
+                          <td className="p-2.5 text-rose-400 font-bold">$35.00</td>
+                        </tr>
+                        <tr>
+                          <td className="p-2.5 text-slate-200">2026-08-20 02:00 PM</td>
+                          <td className="p-2.5">System Admin</td>
+                          <td className="p-2.5">Maintenance</td>
+                          <td className="p-2.5">Gym Sanitizer & Towel Supplies</td>
+                          <td className="p-2.5 text-emerald-400">Cash</td>
+                          <td className="p-2.5 text-rose-400 font-bold">$25.00</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {activeGuideTab === 'attendance' && (
+                <div className="space-y-3 text-xs animate-in fade-in">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-slate-300">
+                      In your Google Sheet tab named <strong className="text-sky-400">"Check-In Log"</strong>, use the following columns (Row 1 is Header):
+                    </p>
+                    <button
+                      onClick={() => handleCopyTemplateHeaders('attendance')}
+                      className="px-3 py-1 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      {copiedTemplate === 'attendance' ? <Check className="w-3.5 h-3.5 text-sky-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copiedTemplate === 'attendance' ? 'Copied Template!' : 'Copy Sample Rows to Clipboard'}
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-950 font-mono text-[11px]">
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-900 text-slate-300 border-b border-slate-800 font-bold">
+                        <tr>
+                          <th className="p-2.5">A: Check-In Date & Time</th>
+                          <th className="p-2.5">B: Member / Guest Name</th>
+                          <th className="p-2.5">C: Phone Number</th>
+                          <th className="p-2.5">D: Plan / Activity</th>
+                          <th className="p-2.5">E: Check-In Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 text-slate-400">
+                        <tr>
+                          <td className="p-2.5 text-slate-200">2026-08-20 08:30 AM</td>
+                          <td className="p-2.5 text-white font-semibold">Ahmad Daniel</td>
+                          <td className="p-2.5">8123456</td>
+                          <td className="p-2.5 text-sky-400">Standard Monthly</td>
+                          <td className="p-2.5 text-emerald-400">Active</td>
+                        </tr>
+                        <tr>
+                          <td className="p-2.5 text-slate-200">2026-08-20 10:00 AM</td>
+                          <td className="p-2.5 text-white font-semibold">Michael Lee</td>
+                          <td className="p-2.5">8889900</td>
+                          <td className="p-2.5 text-amber-400">Walk-In Pass</td>
+                          <td className="p-2.5 text-emerald-400">Active</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {activeGuideTab === 'members' && (
+                <div className="space-y-3 text-xs animate-in fade-in">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-slate-300">
+                      In your Google Sheet tab named <strong className="text-purple-400">"Members Directory"</strong>, use the following columns (Row 1 is Header):
+                    </p>
+                    <button
+                      onClick={() => handleCopyTemplateHeaders('members')}
+                      className="px-3 py-1 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      {copiedTemplate === 'members' ? <Check className="w-3.5 h-3.5 text-purple-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copiedTemplate === 'members' ? 'Copied Template!' : 'Copy Sample Rows to Clipboard'}
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-950 font-mono text-[11px]">
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-900 text-slate-300 border-b border-slate-800 font-bold">
+                        <tr>
+                          <th className="p-2.5">A: Member ID</th>
+                          <th className="p-2.5">B: Full Name</th>
+                          <th className="p-2.5">C: Phone</th>
+                          <th className="p-2.5">D: Plan</th>
+                          <th className="p-2.5">E: Start Date</th>
+                          <th className="p-2.5">F: End Date</th>
+                          <th className="p-2.5">G: Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 text-slate-400">
+                        <tr>
+                          <td className="p-2.5 text-slate-300">MEM-100201</td>
+                          <td className="p-2.5 text-white font-semibold">Jessica Tan</td>
+                          <td className="p-2.5">8991122</td>
+                          <td className="p-2.5 text-purple-400">Standard Monthly</td>
+                          <td className="p-2.5">2026-08-01</td>
+                          <td className="p-2.5">2026-09-01</td>
+                          <td className="p-2.5 text-emerald-400">Active</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Sync Content Payload Stats */}
             <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3">
               <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <ClipboardList className="w-4 h-4 text-emerald-400" /> Full Historical & Current Payload ({effectiveStore})
+                  <ClipboardList className="w-4 h-4 text-emerald-400" /> Full Terminal Data Records ({effectiveStore})
                 </h3>
                 <span className="text-[10px] text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">
                   All-Time Sync Enabled
@@ -905,3 +1342,4 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
     </div>
   );
 };
+
