@@ -1598,6 +1598,266 @@ export async function dbBatchUpsertMembers(
   return { added, updated };
 }
 
+export async function dbBatchUpsertSales(
+  businessName: string,
+  salesToSave: any[]
+): Promise<{ added: number; updated: number }> {
+  await ensureFirebaseAuth();
+  const salesColl = getBusinessCollectionRef(businessName, 'sales');
+  const snap = await getDocs(salesColl);
+  const existingDocs = snap.docs.map((d) => ({ ...d.data(), id: d.id } as any));
+
+  let added = 0;
+  let updated = 0;
+  const deviceId = getDeviceId();
+
+  for (const s of salesToSave) {
+    if (!s.customer && !s.category && (!s.amount || s.amount === 0)) continue;
+
+    const sTimestampStr = toIsoTimestampString(s.timestamp || s.createdAt || s.time);
+    const sDateOnly = sTimestampStr ? sTimestampStr.split('T')[0] : '';
+    const sAmount = Number(s.amount) || 0;
+    const sCustomerClean = (s.customer || '').toLowerCase().trim();
+
+    // Match existing doc by same day + same customer + same amount
+    const existing = existingDocs.find((e) => {
+      const eTimestampStr = toIsoTimestampString(e.timestamp || e.createdAt || e.time);
+      const eDateOnly = eTimestampStr ? eTimestampStr.split('T')[0] : '';
+      const eAmount = Number(e.amount) || 0;
+      const eCustomerClean = (e.customer || '').toLowerCase().trim();
+
+      const sameDay = sDateOnly && eDateOnly && sDateOnly === eDateOnly;
+      const sameCustomer = sCustomerClean && eCustomerClean && sCustomerClean === eCustomerClean;
+      const sameAmount = Math.abs(eAmount - sAmount) < 0.01;
+
+      return sameDay && sameCustomer && sameAmount;
+    });
+
+    if (existing) {
+      await updateDoc(doc(salesColl, existing.id), {
+        category: s.category || existing.category || 'General',
+        customer: s.customer || existing.customer,
+        phone: s.phone !== undefined ? s.phone : existing.phone || '',
+        paymentMethod: s.paymentMethod || s.payment || existing.paymentMethod || 'Cash',
+        payment: s.paymentMethod || s.payment || existing.payment || 'Cash',
+        amount: sAmount,
+        staff: s.staff || existing.staff || 'Duty Staff',
+        timestamp: sTimestampStr || existing.timestamp,
+        time: s.time || existing.time || '10:00 AM',
+        deviceId,
+        updatedAt: serverTimestamp(),
+      });
+      updated++;
+    } else {
+      await addDoc(salesColl, {
+        category: s.category || 'General',
+        customer: s.customer || 'Walk-in Guest',
+        phone: s.phone || '',
+        paymentMethod: s.paymentMethod || s.payment || 'Cash',
+        payment: s.paymentMethod || s.payment || 'Cash',
+        amount: sAmount,
+        staff: s.staff || 'Duty Staff',
+        timestamp: sTimestampStr || new Date().toISOString(),
+        time: s.time || '10:00 AM',
+        deviceId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      added++;
+    }
+  }
+
+  return { added, updated };
+}
+
+export async function dbBatchUpsertExpenses(
+  businessName: string,
+  expensesToSave: any[]
+): Promise<{ added: number; updated: number }> {
+  await ensureFirebaseAuth();
+  const expColl = getBusinessCollectionRef(businessName, 'expenses');
+  const snap = await getDocs(expColl);
+  const existingDocs = snap.docs.map((d) => ({ ...d.data(), id: d.id } as any));
+
+  let added = 0;
+  let updated = 0;
+  const deviceId = getDeviceId();
+
+  for (const exp of expensesToSave) {
+    if (!exp.description && !exp.category && (!exp.amount || exp.amount === 0)) continue;
+
+    const expTimestampStr = toIsoTimestampString(exp.timestamp || exp.createdAt || exp.time);
+    const expDateOnly = expTimestampStr ? expTimestampStr.split('T')[0] : '';
+    const expAmount = Number(exp.amount) || 0;
+    const expDescClean = (exp.description || '').toLowerCase().trim();
+
+    // Match existing doc by same day + same description + same amount
+    const existing = existingDocs.find((e) => {
+      const eTimestampStr = toIsoTimestampString(e.timestamp || e.createdAt || e.time);
+      const eDateOnly = eTimestampStr ? eTimestampStr.split('T')[0] : '';
+      const eAmount = Number(e.amount) || 0;
+      const eDescClean = (e.description || '').toLowerCase().trim();
+
+      const sameDay = expDateOnly && eDateOnly && expDateOnly === eDateOnly;
+      const sameDesc = expDescClean && eDescClean && expDescClean === eDescClean;
+      const sameAmount = Math.abs(eAmount - expAmount) < 0.01;
+
+      return sameDay && sameDesc && sameAmount;
+    });
+
+    if (existing) {
+      await updateDoc(doc(expColl, existing.id), {
+        category: exp.category || existing.category || 'General',
+        description: exp.description || existing.description,
+        paymentMethod: exp.paymentMethod || exp.payment || existing.paymentMethod || 'Cash',
+        payment: exp.paymentMethod || exp.payment || existing.payment || 'Cash',
+        amount: expAmount,
+        staff: exp.staff || existing.staff || 'Duty Staff',
+        timestamp: expTimestampStr || existing.timestamp,
+        time: exp.time || existing.time || '10:00 AM',
+        deviceId,
+        updatedAt: serverTimestamp(),
+      });
+      updated++;
+    } else {
+      await addDoc(expColl, {
+        category: exp.category || 'General',
+        description: exp.description || 'General Expense',
+        paymentMethod: exp.paymentMethod || exp.payment || 'Cash',
+        payment: exp.paymentMethod || exp.payment || 'Cash',
+        amount: expAmount,
+        staff: exp.staff || 'Duty Staff',
+        timestamp: expTimestampStr || new Date().toISOString(),
+        time: exp.time || '10:00 AM',
+        deviceId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      added++;
+    }
+  }
+
+  return { added, updated };
+}
+
+export async function dbBatchUpsertAttendance(
+  businessName: string,
+  attendanceToSave: any[]
+): Promise<{ added: number; updated: number }> {
+  await ensureFirebaseAuth();
+  const attColl = getBusinessCollectionRef(businessName, 'attendance');
+  const snap = await getDocs(attColl);
+  const existingDocs = snap.docs.map((d) => ({ ...d.data(), id: d.id } as any));
+
+  let added = 0;
+  let updated = 0;
+  const deviceId = getDeviceId();
+
+  for (const a of attendanceToSave) {
+    if (!a.name || !a.name.trim()) continue;
+
+    const aTimestampStr = toIsoTimestampString(a.timestamp || a.createdAt || a.time);
+    const aDateOnly = aTimestampStr ? aTimestampStr.split('T')[0] : '';
+    const aNameClean = (a.name || '').toLowerCase().trim();
+    const aPhoneClean = (a.phone || '').trim();
+
+    // Match existing doc by same day + same member/guest name
+    const existing = existingDocs.find((e) => {
+      const eTimestampStr = toIsoTimestampString(e.timestamp || e.createdAt || e.time);
+      const eDateOnly = eTimestampStr ? eTimestampStr.split('T')[0] : '';
+      const eNameClean = (e.name || '').toLowerCase().trim();
+      const ePhoneClean = (e.phone || '').trim();
+
+      const sameDay = aDateOnly && eDateOnly && aDateOnly === eDateOnly;
+      const sameName = aNameClean && eNameClean && aNameClean === eNameClean;
+      const samePhone = !aPhoneClean || !ePhoneClean || aPhoneClean === ePhoneClean;
+
+      return sameDay && sameName && samePhone;
+    });
+
+    if (existing) {
+      await updateDoc(doc(attColl, existing.id), {
+        name: a.name.trim(),
+        phone: a.phone || existing.phone || '',
+        plan: a.plan || existing.plan || 'Standard Monthly',
+        status: a.status || existing.status || 'Active',
+        memberId: a.memberId || existing.memberId || undefined,
+        timestamp: aTimestampStr || existing.timestamp,
+        time: a.time || existing.time || '10:00 AM',
+        deviceId,
+        updatedAt: serverTimestamp(),
+      });
+      updated++;
+    } else {
+      await addDoc(attColl, {
+        name: a.name.trim(),
+        phone: a.phone || '',
+        plan: a.plan || 'Standard Monthly',
+        status: a.status || 'Active',
+        memberId: a.memberId || (a.plan?.toLowerCase().includes('walk-in') ? 'GUEST' : undefined),
+        timestamp: aTimestampStr || new Date().toISOString(),
+        time: a.time || '10:00 AM',
+        deviceId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      added++;
+    }
+  }
+
+  return { added, updated };
+}
+
+export async function dbBatchImportAllHistoricalLogs(
+  businessName: string,
+  data: {
+    members?: Member[];
+    sales?: any[];
+    expenses?: any[];
+    attendance?: any[];
+  }
+): Promise<{
+  members: { added: number; updated: number };
+  sales: { added: number; updated: number };
+  expenses: { added: number; updated: number };
+  attendance: { added: number; updated: number };
+}> {
+  const membersRes = data.members && data.members.length > 0
+    ? await dbBatchUpsertMembers(businessName, data.members)
+    : { added: 0, updated: 0 };
+
+  const salesRes = data.sales && data.sales.length > 0
+    ? await dbBatchUpsertSales(businessName, data.sales)
+    : { added: 0, updated: 0 };
+
+  const expRes = data.expenses && data.expenses.length > 0
+    ? await dbBatchUpsertExpenses(businessName, data.expenses)
+    : { added: 0, updated: 0 };
+
+  const attRes = data.attendance && data.attendance.length > 0
+    ? await dbBatchUpsertAttendance(businessName, data.attendance)
+    : { added: 0, updated: 0 };
+
+  const totalAdded = membersRes.added + salesRes.added + expRes.added + attRes.added;
+  const totalUpdated = membersRes.updated + salesRes.updated + expRes.updated + attRes.updated;
+
+  if (totalAdded > 0 || totalUpdated > 0) {
+    dbBroadcastEvent(businessName, {
+      type: 'info',
+      title: '📥 Google Sheets Full Sync',
+      message: `Pulled from Google Sheets for ${businessName}: ${salesRes.added} new sales, ${expRes.added} new expenses, ${attRes.added} new check-ins, ${membersRes.added} new members!`,
+      timestamp: getBruneiFormattedTime(new Date(), true),
+    }).catch((e) => console.warn('Broadcast error:', e));
+  }
+
+  return {
+    members: membersRes,
+    sales: salesRes,
+    expenses: expRes,
+    attendance: attRes,
+  };
+}
+
 export async function dbRenewMember(
   businessName: string,
   data: {
