@@ -274,19 +274,8 @@ export const BusinessAuthModal: React.FC<BusinessAuthModalProps> = ({
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
                 <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
-                {mode === 'register' ? 'Set 4-Digit Security PIN' : 'Enter 4-Digit Security PIN'}
+                {mode === 'register' ? 'Set 4-Digit Security PIN' : 'Enter Registered 4-Digit PIN'}
               </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setPin('1234');
-                  if (mode === 'register') setConfirmPin('1234');
-                  setError(null);
-                }}
-                className="text-[11px] text-emerald-400 hover:text-emerald-300 font-semibold underline underline-offset-2 transition cursor-pointer"
-              >
-                Use Default (1234)
-              </button>
             </div>
 
             {/* Visual PIN Code Box */}
