@@ -1406,6 +1406,88 @@ async function applyLogSheetsFormatting(accessToken: string, spreadsheetId: stri
 }
 
 /**
+ * Robustly parses a date/time string from Google Sheets into a valid ISO timestamp.
+ */
+export function parseFlexibleDateTimeToIso(rawDate: any, fallbackTime?: string): string {
+  if (!rawDate && !fallbackTime) return new Date().toISOString();
+  if (typeof rawDate === 'number') {
+    // Excel/Sheets serial date number (days since Dec 30 1899)
+    if (rawDate > 10000 && rawDate < 100000) {
+      const ms = (rawDate - 25569) * 86400 * 1000;
+      const d = new Date(ms);
+      if (!isNaN(d.getTime())) return d.toISOString();
+    }
+    const d = new Date(rawDate);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  const str = String(rawDate || '').trim();
+  if (!str && fallbackTime) {
+    const today = new Date().toISOString().split('T')[0];
+    return `${today}T${fallbackTime}:00.000Z`;
+  }
+
+  // Check if standard ISO format already
+  if (/^\d{4}-\d{2}-\d{2}T/.test(str)) {
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  // Format: "YYYY-MM-DD HH:mm:ss" or "YYYY-MM-DD hh:mm AM/PM" or "YYYY-MM-DD HH:mm"
+  const ymdMatch = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?/i);
+  if (ymdMatch) {
+    const year = parseInt(ymdMatch[1], 10);
+    const month = parseInt(ymdMatch[2], 10) - 1;
+    const day = parseInt(ymdMatch[3], 10);
+    let hours = ymdMatch[4] ? parseInt(ymdMatch[4], 10) : 12;
+    const minutes = ymdMatch[5] ? parseInt(ymdMatch[5], 10) : 0;
+    const seconds = ymdMatch[6] ? parseInt(ymdMatch[6], 10) : 0;
+    const ampm = ymdMatch[7]?.toUpperCase();
+
+    if (ampm === 'PM' && hours < 12) hours += 12;
+    if (ampm === 'AM' && hours === 12) hours = 0;
+
+    const d = new Date(year, month, day, hours, minutes, seconds);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  // Format: "DD/MM/YYYY HH:mm" or "DD-MM-YYYY hh:mm AM/PM"
+  const dmyMatch = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?/i);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const month = parseInt(dmyMatch[2], 10) - 1;
+    const year = parseInt(dmyMatch[3], 10);
+    let hours = dmyMatch[4] ? parseInt(dmyMatch[4], 10) : 12;
+    const minutes = dmyMatch[5] ? parseInt(dmyMatch[5], 10) : 0;
+    const seconds = dmyMatch[6] ? parseInt(dmyMatch[6], 10) : 0;
+    const ampm = dmyMatch[7]?.toUpperCase();
+
+    if (ampm === 'PM' && hours < 12) hours += 12;
+    if (ampm === 'AM' && hours === 12) hours = 0;
+
+    const d = new Date(year, month, day, hours, minutes, seconds);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  // Fallback native Date parse
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) return parsed.toISOString();
+
+  return new Date().toISOString();
+}
+
+/**
+ * Parses numeric currency strings like "$50.00", "50", "B$12.50" into standard float numbers.
+ */
+export function parseCleanCurrencyAmount(val: any): number {
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  if (!val) return 0;
+  const cleaned = String(val).replace(/[^0-9.-]/g, '').trim();
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : Math.round(num * 100) / 100;
+}
+
+/**
  * Fetches all members listed in the Google Sheets 'Members Directory' (or 'Members List') tab.
  */
 export async function fetchMembersFromGoogleSheets(
@@ -1413,7 +1495,7 @@ export async function fetchMembersFromGoogleSheets(
   spreadsheetId: string
 ): Promise<Member[]> {
   // Check which tab exists: 'Members Directory' or fallback to 'Members List'
-  let range = "'Members Directory'!A2:G500";
+  let range = "'Members Directory'!A2:G50000";
   let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
 
   let res = await fetch(url, {
@@ -1421,7 +1503,7 @@ export async function fetchMembersFromGoogleSheets(
   });
 
   if (!res.ok) {
-    range = "'Members List'!A2:G500";
+    range = "'Members List'!A2:G50000";
     url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
     res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -1429,7 +1511,7 @@ export async function fetchMembersFromGoogleSheets(
   }
 
   if (!res.ok) {
-    throw new Error('Could not find "Members Directory" or "Members List" tab in your Google Spreadsheet.');
+    return [];
   }
 
   const json = await res.json();
@@ -1467,16 +1549,272 @@ export async function fetchMembersFromGoogleSheets(
 
     if (!name) continue;
 
+    // Clean up dates if needed
+    const cleanStartDate = startDate && startDate !== '-' ? startDate : new Date().toISOString().split('T')[0];
+    const cleanEndDate = endDate && endDate !== '-' ? endDate : '';
+
     members.push({
       memberId: memberId || undefined,
       name,
-      phone,
+      phone: phone && phone !== '-' ? phone : '',
       plan: plan || 'Standard Monthly',
-      startDate: startDate || new Date().toISOString().split('T')[0],
-      endDate: endDate || '',
+      startDate: cleanStartDate,
+      endDate: cleanEndDate,
       status: (status as any) || undefined,
     });
   }
 
   return members;
+}
+
+/**
+ * Fetches all sales entries listed in the Google Sheets 'Sales Log' (or 'Sales') tab.
+ */
+export async function fetchSalesFromGoogleSheets(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<any[]> {
+  let range = "'Sales Log'!A2:G50000";
+  let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+
+  let res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!res.ok) {
+    range = "'Sales'!A2:G50000";
+    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  if (!res.ok) {
+    return [];
+  }
+
+  const json = await res.json();
+  const rows: any[][] = json.values || [];
+  const sales: any[] = [];
+
+  for (const row of rows) {
+    if (!row || row.length === 0) continue;
+
+    // Skip header row if present
+    const firstCell = String(row[0] || '').trim().toLowerCase();
+    if (firstCell.includes('date') || firstCell.includes('time')) continue;
+
+    // Columns:
+    // A (0): Date & Time (e.g. 2026-08-20 09:30 AM)
+    // B (1): Staff on Duty
+    // C (2): Category (POS, Membership, Walk-In, Personal Training, Classes, etc.)
+    // D (3): Customer / Guest
+    // E (4): Phone Number
+    // F (5): Payment Method (Cash, Baiduri Card, BIBD QuickPay, Coupon)
+    // G (6): Amount ($)
+    const rawDateTime = row[0];
+    const staff = String(row[1] || 'Duty Staff').trim();
+    const category = String(row[2] || 'POS').trim();
+    const customer = String(row[3] || 'Walk-in Guest').trim();
+    const phone = String(row[4] || '').trim();
+    const paymentMethod = String(row[5] || 'Cash').trim();
+    const amount = parseCleanCurrencyAmount(row[6]);
+
+    if (!customer && !category && amount === 0) continue;
+
+    const timestamp = parseFlexibleDateTimeToIso(rawDateTime);
+    const d = new Date(timestamp);
+    const timeFormatted = !isNaN(d.getTime())
+      ? d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+      : '10:00 AM';
+
+    sales.push({
+      timestamp,
+      time: timeFormatted,
+      staff: staff || 'Duty Staff',
+      category: category || 'General',
+      customer: customer || 'Customer',
+      phone: phone && phone !== '-' ? phone : '',
+      paymentMethod: paymentMethod || 'Cash',
+      payment: paymentMethod || 'Cash',
+      amount,
+    });
+  }
+
+  return sales;
+}
+
+/**
+ * Fetches all expenses entries listed in the Google Sheets 'Expenses Log' (or 'Expenses') tab.
+ */
+export async function fetchExpensesFromGoogleSheets(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<any[]> {
+  let range = "'Expenses Log'!A2:F50000";
+  let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+
+  let res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!res.ok) {
+    range = "'Expenses'!A2:F50000";
+    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  if (!res.ok) {
+    return [];
+  }
+
+  const json = await res.json();
+  const rows: any[][] = json.values || [];
+  const expenses: any[] = [];
+
+  for (const row of rows) {
+    if (!row || row.length === 0) continue;
+
+    // Skip header row if present
+    const firstCell = String(row[0] || '').trim().toLowerCase();
+    if (firstCell.includes('date') || firstCell.includes('time')) continue;
+
+    // Columns:
+    // A (0): Date & Time
+    // B (1): Staff on Duty
+    // C (2): Category (Utilities, Maintenance, Supplies, etc.)
+    // D (3): Description
+    // E (4): Payment Method
+    // F (5): Amount ($)
+    const rawDateTime = row[0];
+    const staff = String(row[1] || 'Duty Staff').trim();
+    const category = String(row[2] || 'General').trim();
+    const description = String(row[3] || 'Expense').trim();
+    const paymentMethod = String(row[4] || 'Cash').trim();
+    const amount = parseCleanCurrencyAmount(row[5]);
+
+    if (!description && !category && amount === 0) continue;
+
+    const timestamp = parseFlexibleDateTimeToIso(rawDateTime);
+    const d = new Date(timestamp);
+    const timeFormatted = !isNaN(d.getTime())
+      ? d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+      : '10:00 AM';
+
+    expenses.push({
+      timestamp,
+      time: timeFormatted,
+      staff: staff || 'Duty Staff',
+      category: category || 'General',
+      description: description || 'Expense',
+      paymentMethod: paymentMethod || 'Cash',
+      payment: paymentMethod || 'Cash',
+      amount,
+    });
+  }
+
+  return expenses;
+}
+
+/**
+ * Fetches all check-in / attendance records listed in the Google Sheets 'Check-In Log' (or 'Attendance') tab.
+ */
+export async function fetchAttendanceFromGoogleSheets(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<any[]> {
+  let range = "'Check-In Log'!A2:E50000";
+  let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+
+  let res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!res.ok) {
+    range = "'Attendance'!A2:E50000";
+    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  if (!res.ok) {
+    range = "'Check-Ins'!A2:E50000";
+    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  if (!res.ok) {
+    return [];
+  }
+
+  const json = await res.json();
+  const rows: any[][] = json.values || [];
+  const attendance: any[] = [];
+
+  for (const row of rows) {
+    if (!row || row.length === 0) continue;
+
+    // Skip header row if present
+    const firstCell = String(row[0] || '').trim().toLowerCase();
+    if (firstCell.includes('check-in') || firstCell.includes('date') || firstCell.includes('time')) continue;
+
+    // Columns:
+    // A (0): Check-In Date & Time
+    // B (1): Member / Guest Name
+    // C (2): Phone Number
+    // D (3): Plan / Activity
+    // E (4): Check-In Status
+    const rawDateTime = row[0];
+    const name = String(row[1] || 'Guest').trim();
+    const phone = String(row[2] || '').trim();
+    const plan = String(row[3] || 'Standard Monthly').trim();
+    const status = String(row[4] || 'Active').trim();
+
+    if (!name) continue;
+
+    const timestamp = parseFlexibleDateTimeToIso(rawDateTime);
+    const d = new Date(timestamp);
+    const timeFormatted = !isNaN(d.getTime())
+      ? d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+      : '10:00 AM';
+
+    attendance.push({
+      timestamp,
+      time: timeFormatted,
+      name,
+      phone: phone && phone !== '-' ? phone : '',
+      plan: plan || 'Standard Monthly',
+      status: status || 'Active',
+      memberId: plan.toLowerCase().includes('walk-in') || plan.toLowerCase().includes('guest') ? 'GUEST' : undefined,
+    });
+  }
+
+  return attendance;
+}
+
+/**
+ * Fetches all datasets from Google Sheets simultaneously for complete two-way synchronization.
+ */
+export async function fetchAllLogsFromGoogleSheets(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<{
+  members: Member[];
+  sales: any[];
+  expenses: any[];
+  attendance: any[];
+}> {
+  const [members, sales, expenses, attendance] = await Promise.all([
+    fetchMembersFromGoogleSheets(accessToken, spreadsheetId).catch(() => []),
+    fetchSalesFromGoogleSheets(accessToken, spreadsheetId).catch(() => []),
+    fetchExpensesFromGoogleSheets(accessToken, spreadsheetId).catch(() => []),
+    fetchAttendanceFromGoogleSheets(accessToken, spreadsheetId).catch(() => []),
+  ]);
+
+  return { members, sales, expenses, attendance };
 }
