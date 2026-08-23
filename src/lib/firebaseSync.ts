@@ -197,9 +197,9 @@ export function getStoredBusinessName(): string {
 
 export function getStoredBusinessPin(): string {
   try {
-    return localStorage.getItem('current_business_pin') || '1234';
+    return localStorage.getItem('current_business_pin') || '';
   } catch {
-    return '1234';
+    return '';
   }
 }
 
@@ -525,7 +525,7 @@ export async function seedInitialBusinessData(businessName: string, pin: string,
         bizRef,
         {
           name: cleanName,
-          pin: (pin || '1234').trim(),
+          pin: (pin || '').trim(),
           staffPin: '123456',
           activeShift: demoShift,
           availableStores: [cleanName],
@@ -715,11 +715,11 @@ export async function authenticateCloudBusinessStore(
     if (mode === 'login') {
       if (snapshot && snapshot.exists && snapshot.exists()) {
         const data = snapshot.data();
-        const storedPin = String(data.pin || '1234').trim();
-        if (storedPin !== cleanPin && cleanPin !== '1234' && cleanPin !== '123456') {
+        const storedPin = String(data.pin || '').trim();
+        if (storedPin && storedPin !== cleanPin) {
           return {
             success: false,
-            message: `Incorrect 4-digit PIN code for "${data.name || cleanName}". (Default PIN: 1234)`,
+            message: `Incorrect 4-digit PIN code for "${data.name || cleanName}". Please enter the registered PIN.`,
           };
         }
         return {
@@ -728,20 +728,17 @@ export async function authenticateCloudBusinessStore(
           pin: cleanPin,
         };
       } else {
-        // First-time initialization for store in background
-        seedInitialBusinessData(cleanName, cleanPin).catch(() => {});
         return {
-          success: true,
-          businessName: cleanName,
-          pin: cleanPin,
+          success: false,
+          message: `Business "${cleanName}" not found. Please switch to "Register New Store" to register it with a 4-digit PIN.`,
         };
       }
     } else {
       // REGISTER MODE
       if (snapshot && snapshot.exists && snapshot.exists()) {
         const data = snapshot.data();
-        const storedPin = String(data.pin || '1234').trim();
-        if (storedPin === cleanPin || cleanPin === '1234') {
+        const storedPin = String(data.pin || '').trim();
+        if (storedPin && storedPin === cleanPin) {
           return {
             success: true,
             businessName: data.name || cleanName,
@@ -750,12 +747,12 @@ export async function authenticateCloudBusinessStore(
         }
         return {
           success: false,
-          message: `Business "${data.name || cleanName}" is already registered. Please switch to "Log In Store" and enter its PIN.`,
+          message: `Business "${data.name || cleanName}" is already registered. Please switch to "Log In Store" and enter its registered PIN.`,
         };
       }
 
-      // Fresh registration
-      seedInitialBusinessData(cleanName, cleanPin).catch(() => {});
+      // Fresh registration with chosen registered PIN
+      await seedInitialBusinessData(cleanName, cleanPin);
       return {
         success: true,
         businessName: cleanName,
@@ -764,11 +761,19 @@ export async function authenticateCloudBusinessStore(
     }
   } catch (err: any) {
     console.error('Firestore business authentication error:', err);
-    // Allow graceful offline fallback
+    // If offline, check if local storage has matching registered PIN
+    const localPin = getStoredBusinessPin();
+    const localName = getStoredBusinessName();
+    if (localName.toLowerCase() === cleanName.toLowerCase() && localPin && localPin === cleanPin) {
+      return {
+        success: true,
+        businessName: cleanName,
+        pin: cleanPin,
+      };
+    }
     return {
-      success: true,
-      businessName: cleanName,
-      pin: cleanPin,
+      success: false,
+      message: 'Could not verify store credentials with cloud database. Please verify your connection.',
     };
   }
 }
