@@ -28,7 +28,9 @@ import {
   Download,
   ArrowDownToLine,
   Layers,
-  HelpCircle
+  HelpCircle,
+  Trash2,
+  RotateCcw
 } from 'lucide-react';
 import {
   initAuth,
@@ -60,7 +62,8 @@ import {
   dbBatchImportAllHistoricalLogs,
   dbGetStoreSpreadsheet,
   dbSaveStoreSpreadsheet,
-  dbClearStoreSpreadsheet
+  dbClearStoreSpreadsheet,
+  dbClearAllDataToZero
 } from '../../lib/firebaseSync';
 import { DashboardData, Member } from '../../types';
 
@@ -102,6 +105,8 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
   const [manualTokenInput, setManualTokenInput] = useState('');
   const [manualEmailInput, setManualEmailInput] = useState('');
   const [isSubmittingManualToken, setIsSubmittingManualToken] = useState(false);
+  const [showWipeZeroModal, setShowWipeZeroModal] = useState(false);
+  const [isWipingDatabase, setIsWipingDatabase] = useState(false);
 
   const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
 
@@ -505,6 +510,23 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setErrorMsg(err.message || 'Failed to pull members from Google Sheet.');
     } finally {
       setIsPullingMembers(false);
+    }
+  };
+
+  // 1-Click Clear / Delete All Local & Cloud Data to Zero ($0.00 clean slate)
+  const handleWipeDatabaseToZero = async () => {
+    setIsWipingDatabase(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      await dbClearAllDataToZero(effectiveStore);
+      setShowWipeZeroModal(false);
+      setSuccessMsg(`🧹 Clean Slate Complete: All transactions, sales, check-ins, expenses, and members for ${effectiveStore} have been deleted and reset to zero ($0.00)! Your Google Sheet remains safely preserved in your Google Drive.`);
+    } catch (err: any) {
+      console.error('Failed to clear database to zero:', err);
+      setErrorMsg(err.message || 'Failed to clear database to zero.');
+    } finally {
+      setIsWipingDatabase(false);
     }
   };
 
@@ -914,6 +936,19 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
                   >
                     <Users className="w-3 h-3 text-purple-400" />
                     {isPullingMembers ? 'Pulling...' : '📥 Pull Members Directory'}
+                  </button>
+
+                  <div className="h-4 w-px bg-slate-800 hidden sm:block mx-1" />
+
+                  {/* Clean Slate / Delete Terminal Changes button */}
+                  <button
+                    onClick={() => setShowWipeZeroModal(true)}
+                    disabled={isWipingDatabase}
+                    className="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900/80 border border-rose-800/60 text-rose-300 font-semibold rounded-lg text-[11px] flex items-center gap-1.5 transition cursor-pointer ml-auto"
+                    title="Delete and wipe all changes made on this terminal back to zero"
+                  >
+                    <Trash2 className="w-3 h-3 text-rose-400" />
+                    {isWipingDatabase ? 'Clearing Data...' : '🗑️ Delete Terminal Changes (Reset to $0.00)'}
                   </button>
                 </div>
               </div>
@@ -1403,6 +1438,54 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
                 className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-colors shadow-md shadow-emerald-950/40 cursor-pointer"
               >
                 <CheckCircle2 className="w-4 h-4" /> Push All History to Google Sheets
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clean Slate / Delete Terminal Changes Confirmation Modal */}
+      {showWipeZeroModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-500/40 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-2xl animate-in fade-in zoom-in-95 text-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 shrink-0">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Delete All Terminal Changes</h3>
+                <p className="text-xs text-rose-300 font-semibold">Clean Slate for {effectiveStore}</p>
+              </div>
+            </div>
+
+            <div className="text-xs text-slate-300 leading-relaxed bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2">
+              <p className="text-rose-200 font-medium">
+                Are you sure you want to delete and reset all changes on this POS terminal back to zero?
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-slate-400 text-[11px]">
+                <li>Wipes all local & Firestore test records for <strong>{effectiveStore}</strong> (Sales, Check-Ins, Expenses, Members).</li>
+                <li>Counters & balances reset completely to <strong>$0.00</strong>.</li>
+                <li><strong>Note:</strong> Your remote Google Sheet spreadsheet (in Google Drive) will NOT be deleted. You can re-pull anytime!</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowWipeZeroModal(false)}
+                disabled={isWipingDatabase}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleWipeDatabaseToZero}
+                disabled={isWipingDatabase}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition-colors shadow-lg shadow-rose-950/50 cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                {isWipingDatabase ? 'Deleting & Resetting...' : 'Yes, Delete All & Reset to Zero ($0.00)'}
               </button>
             </div>
           </div>
