@@ -194,34 +194,29 @@ export const initAuth = (
   };
 };
 
+export const setManualAccessToken = async (token: string, email = 'user@google.com'): Promise<{ user: AuthUser; accessToken: string }> => {
+  const user = await fetchGoogleUserProfile(token);
+  if (!user.email || user.email === 'connected-account@google.com') {
+    user.email = email;
+    user.displayName = email.split('@')[0];
+  }
+  notifyAuthSuccess(user, token);
+  return { user, accessToken: token };
+};
+
 export const googleSignIn = async (): Promise<{ user: AuthUser; accessToken: string } | null> => {
-  if (isSigningIn) return null;
+  if (isSigningIn) {
+    isSigningIn = false; // Reset if stuck
+  }
   isSigningIn = true;
 
   try {
-    // Primary approach: Use Google Identity Services (GIS) token client with Client ID
-    // This runs completely client-side and avoids Firebase Auth's unauthorized-domain error
-    if (OAUTH_CLIENT_ID) {
-      try {
-        const gisResult = await requestGisToken(OAUTH_CLIENT_ID);
-        notifyAuthSuccess(gisResult.user, gisResult.accessToken);
-        return gisResult;
-      } catch (gisErr: any) {
-        console.warn('GIS Token client attempt note:', gisErr?.message || gisErr);
-        // If user cancelled, throw clearly
-        if (gisErr?.message?.toLowerCase().includes('popup_closed') || gisErr?.message?.toLowerCase().includes('closed')) {
-          throw new Error('Sign-in popup was closed before completing authorization.');
-        }
-        // If GIS failed due to other issues, continue to Firebase Auth fallback below
-      }
-    }
-
-    // Secondary fallback: Firebase signInWithPopup
+    // Primary approach: Firebase signInWithPopup
     try {
       const result = await signInWithPopup(auth, firebaseProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (!credential?.accessToken) {
-        throw new Error('Failed to retrieve Google Access Token from Firebase Auth.');
+        throw new Error('Google signed in, but access token for Sheets/Drive was not returned. Please ensure spreadsheet permissions are granted.');
       }
 
       const token = credential.accessToken;
@@ -232,16 +227,22 @@ export const googleSignIn = async (): Promise<{ user: AuthUser; accessToken: str
       const errorCode = fbErr?.code || '';
       const errorMsg = fbErr?.message || '';
 
+      console.warn('Firebase signInWithPopup returned:', errorCode, errorMsg);
+
+      // If Firebase blocked by unauthorized domain, try GIS client if available
       if (
         errorCode === 'auth/unauthorized-domain' ||
         errorMsg.toLowerCase().includes('unauthorized domain') ||
         errorMsg.toLowerCase().includes('requested action is invalid')
       ) {
-        // If Firebase threw unauthorized domain and GIS had not succeeded, retry GIS explicitly
         if (OAUTH_CLIENT_ID) {
-          const retryGis = await requestGisToken(OAUTH_CLIENT_ID);
-          notifyAuthSuccess(retryGis.user, retryGis.accessToken);
-          return retryGis;
+          try {
+            const gisResult = await requestGisToken(OAUTH_CLIENT_ID);
+            notifyAuthSuccess(gisResult.user, gisResult.accessToken);
+            return gisResult;
+          } catch (gisErr: any) {
+            console.warn('GIS Token client fallback also failed:', gisErr);
+          }
         }
 
         const customErr = new Error(
@@ -258,6 +259,17 @@ export const googleSignIn = async (): Promise<{ user: AuthUser; accessToken: str
 
       if (errorCode === 'auth/popup-closed-by-user') {
         throw new Error('Sign-in popup was closed before completing authentication. Please try again.');
+      }
+
+      // Try GIS if Firebase had other errors
+      if (OAUTH_CLIENT_ID) {
+        try {
+          const gisResult = await requestGisToken(OAUTH_CLIENT_ID);
+          notifyAuthSuccess(gisResult.user, gisResult.accessToken);
+          return gisResult;
+        } catch (gisErr: any) {
+          console.warn('GIS attempt failed:', gisErr);
+        }
       }
 
       throw fbErr;
