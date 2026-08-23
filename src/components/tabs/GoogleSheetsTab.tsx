@@ -35,6 +35,7 @@ import {
   googleSignIn,
   googleSignOut,
   getAccessToken,
+  setManualAccessToken,
   AuthUser
 } from '../../lib/googleAuth';
 import {
@@ -97,8 +98,34 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const [copiedDomain, setCopiedDomain] = useState(false);
+  const [showManualToken, setShowManualToken] = useState(false);
+  const [manualTokenInput, setManualTokenInput] = useState('');
+  const [manualEmailInput, setManualEmailInput] = useState('');
+  const [isSubmittingManualToken, setIsSubmittingManualToken] = useState(false);
 
   const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
+
+  const handleManualTokenSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualTokenInput.trim()) return;
+    setIsSubmittingManualToken(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const cleanToken = manualTokenInput.trim();
+      const res = await setManualAccessToken(cleanToken, manualEmailInput.trim() || 'gym-manager@google.com');
+      setUser(res.user);
+      setToken(res.accessToken);
+      await loadSpreadsheetForStore(res.accessToken, effectiveStore);
+      setSuccessMsg('Successfully connected Google Workspace with provided OAuth token!');
+      setShowManualToken(false);
+    } catch (err: any) {
+      console.error('Failed manual token auth:', err);
+      setErrorMsg(err.message || 'Failed to authenticate with the provided token.');
+    } finally {
+      setIsSubmittingManualToken(false);
+    }
+  };
 
   const handleCopyDomain = () => {
     if (currentHost) {
@@ -620,14 +647,56 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
           <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
             Connect your Google account to enable live synchronization with Google Sheets for <strong className="text-white">{effectiveStore}</strong>. Each store maintains its own separate Google Spreadsheet in your Google Drive.
           </p>
-          <button
-            onClick={handleSignIn}
-            disabled={isSigningIn}
-            className="px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-lg shadow-emerald-950/40 flex items-center gap-2 mx-auto cursor-pointer"
-          >
-            <Sparkles className="w-4 h-4" />
-            {isSigningIn ? 'Connecting to Google...' : 'Connect Google Workspace Account'}
-          </button>
+          <div className="flex flex-col items-center gap-3">
+            <button
+              onClick={handleSignIn}
+              disabled={isSigningIn}
+              className="px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-lg shadow-emerald-950/40 flex items-center gap-2 mx-auto cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              {isSigningIn ? 'Connecting to Google...' : 'Connect Google Workspace Account'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowManualToken(!showManualToken)}
+              className="text-[11px] text-slate-400 hover:text-slate-200 underline transition cursor-pointer"
+            >
+              {showManualToken ? 'Hide token option' : 'Or connect using an OAuth Access Token directly'}
+            </button>
+          </div>
+
+          {showManualToken && (
+            <form onSubmit={handleManualTokenSubmit} className="pt-3 border-t border-slate-800 space-y-3 text-left animate-in fade-in">
+              <p className="text-[11px] text-slate-300">
+                Paste a Google OAuth Access Token with Spreadsheet and Drive permissions:
+              </p>
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  placeholder="Paste Google Access Token (ya29...)"
+                  value={manualTokenInput}
+                  onChange={(e) => setManualTokenInput(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-mono"
+                />
+                <input
+                  type="email"
+                  placeholder="Your Google Email (optional, e.g. manager@gmail.com)"
+                  value={manualEmailInput}
+                  onChange={(e) => setManualEmailInput(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="submit"
+                  disabled={isSubmittingManualToken || !manualTokenInput.trim()}
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  {isSubmittingManualToken ? 'Connecting...' : 'Connect with Token'}
+                </button>
+              </div>
+            </form>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
