@@ -252,6 +252,14 @@ export function getMembersCollectionRef() {
   return collection(db, 'members');
 }
 
+// Active subscription registry so mutations immediately update in-memory live state across the terminal
+interface ActiveSubscription {
+  businessName: string;
+  updateMembers: (updater: (prev: Member[]) => Member[]) => void;
+  emit: () => void;
+}
+const activeSubscriptions = new Set<ActiveSubscription>();
+
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   let timer: any;
   const timeoutPromise = new Promise<T>((resolve) => {
@@ -891,53 +899,20 @@ export function subscribeFirestoreBusiness(
     const membersRef = getMembersCollectionRef();
     const unsubMembers = onSnapshot(
       membersRef,
-      async (snap) => {
-        if (!snap.empty) {
-          liveMembers = snap.docs.map((d) => {
-            const data = d.data();
-            return {
-              memberId: data.memberId || d.id,
-              name: data.name || '',
-              phone: data.phone || '',
-              plan: data.plan || '',
-              startDate: data.startDate || '',
-              endDate: data.endDate || '',
-              status: getMemberStatus(data.endDate, activeDate),
-              registeredStore: data.registeredStore,
-            };
-          });
-        } else {
-          // If global shared collection is empty, migrate any legacy store-level members seamlessly
-          try {
-            const legacyStoreMembersRef = getBusinessCollectionRef(cleanName, 'members');
-            const legacySnap = await getDocs(legacyStoreMembersRef);
-            if (!legacySnap.empty) {
-              const legacyList: Member[] = [];
-              for (const legDoc of legacySnap.docs) {
-                const legData = legDoc.data();
-                const memObj: Member = {
-                  memberId: legData.memberId || legDoc.id,
-                  name: legData.name || '',
-                  phone: legData.phone || '',
-                  plan: legData.plan || '',
-                  startDate: legData.startDate || '',
-                  endDate: legData.endDate || '',
-                  status: getMemberStatus(legData.endDate, activeDate),
-                  registeredStore: legData.registeredStore || cleanName,
-                };
-                legacyList.push(memObj);
-                setDoc(doc(getMembersCollectionRef(), memObj.memberId), {
-                  ...legData,
-                  ...memObj,
-                  updatedAt: serverTimestamp(),
-                }, { merge: true }).catch(() => {});
-              }
-              liveMembers = legacyList;
-            }
-          } catch (migErr) {
-            console.warn('Member migration note:', migErr);
-          }
-        }
+      (snap) => {
+        liveMembers = snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            memberId: data.memberId || d.id,
+            name: data.name || '',
+            phone: data.phone || '',
+            plan: data.plan || '',
+            startDate: data.startDate || '',
+            endDate: data.endDate || '',
+            status: getMemberStatus(data.endDate, activeDate),
+            registeredStore: data.registeredStore,
+          };
+        });
         emitDashboard();
       },
       (err) => console.warn('Shared members listener error:', err)
@@ -1020,8 +995,18 @@ export function subscribeFirestoreBusiness(
     onStatusChange?.('offline');
   }
 
+  const subscriptionObj: ActiveSubscription = {
+    businessName: cleanName,
+    updateMembers: (updater) => {
+      liveMembers = updater(liveMembers);
+    },
+    emit: () => emitDashboard(),
+  };
+  activeSubscriptions.add(subscriptionObj);
+
   return () => {
     isUnsubscribed = true;
+    activeSubscriptions.delete(subscriptionObj);
     unsubs.forEach((fn) => fn());
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', handleOnline);
@@ -2160,36 +2145,67 @@ export async function dbDeleteExpense(businessName: string, expData: any) {
 
 export async function dbDeleteMember(businessName: string, memberId: string) {
   await ensureFirebaseAuth();
-  // 1. Delete from Universal Shared collection (/members)
-  const membersColl = getMembersCollectionRef();
-  const snap = await getDocs(membersColl);
-  const target = snap.docs.find((d) => {
-    const data = d.data();
-    return data.memberId === memberId || d.id === memberId;
+  const cleanId = (memberId || '').trim();
+  const cleanIdLower = cleanId.toLowerCase();
+
+  // 1. Instantly update in-memory live state across all active listeners
+  activeSubscriptions.forEach((sub) => {
+    sub.updateMembers((prev) =>
+      prev.filter((m) => (m.memberId || '').trim().toLowerCase() !== cleanIdLower)
+    );
+    sub.emit();
   });
-  if (target) {
-    await deleteDoc(doc(membersColl, target.id));
+
+  const deletePromises: Promise<any>[] = [];
+
+  // 2. Delete from Universal Shared collection (/members)
+  try {
+    const membersColl = getMembersCollectionRef();
+    if (cleanId) {
+      deletePromises.push(deleteDoc(doc(membersColl, cleanId)).catch(() => {}));
+    }
+
+    const snap = await getDocs(membersColl);
+    for (const d of snap.docs) {
+      const data = d.data();
+      const dMemId = (data.memberId || '').toString().trim().toLowerCase();
+      const dDocId = d.id.trim().toLowerCase();
+      if (dMemId === cleanIdLower || dDocId === cleanIdLower) {
+        deletePromises.push(deleteDoc(doc(membersColl, d.id)).catch(() => {}));
+      }
+    }
+  } catch (err) {
+    console.warn('Error deleting from /members:', err);
   }
 
-  // 2. Also delete from store-level collection if legacy doc exists
+  // 3. Also delete from store-level collection if legacy docs exist
   try {
     const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
-    const storeSnap = await getDocs(storeMembersColl);
-    const storeTarget = storeSnap.docs.find((d) => {
-      const data = d.data();
-      return data.memberId === memberId || d.id === memberId;
-    });
-    if (storeTarget) {
-      await deleteDoc(doc(storeMembersColl, storeTarget.id));
+    if (cleanId) {
+      deletePromises.push(deleteDoc(doc(storeMembersColl, cleanId)).catch(() => {}));
     }
-  } catch {}
+
+    const storeSnap = await getDocs(storeMembersColl);
+    for (const d of storeSnap.docs) {
+      const data = d.data();
+      const dMemId = (data.memberId || '').toString().trim().toLowerCase();
+      const dDocId = d.id.trim().toLowerCase();
+      if (dMemId === cleanIdLower || dDocId === cleanIdLower) {
+        deletePromises.push(deleteDoc(doc(storeMembersColl, d.id)).catch(() => {}));
+      }
+    }
+  } catch (err) {
+    console.warn('Error deleting from legacy store collection:', err);
+  }
+
+  await Promise.allSettled(deletePromises);
 
   dbBroadcastEvent(businessName, {
     type: 'membership',
     title: '🗑️ Member Deleted',
-    message: `Member #${memberId} removed from Universal Member Directory.`,
+    message: `Member #${cleanId} removed from Universal Member Directory.`,
     timestamp: getBruneiFormattedTime(new Date(), true),
-    memberId,
+    memberId: cleanId,
   }).catch((e) => console.warn('Broadcast notice:', e));
 }
 
@@ -2206,44 +2222,89 @@ export async function dbUpdateMember(
   }
 ) {
   await ensureFirebaseAuth();
-  // 1. Update in Universal Shared collection (/members)
+  const cleanId = (memberId || '').trim();
+  const cleanIdLower = cleanId.toLowerCase();
+
+  // 1. Instantly update in-memory live state across all active listeners
+  activeSubscriptions.forEach((sub) => {
+    sub.updateMembers((prev) =>
+      prev.map((m) => {
+        if ((m.memberId || '').trim().toLowerCase() === cleanIdLower) {
+          const resolvedStatus: 'Active' | 'Expiring Soon' | 'Expired' = updates.endDate
+            ? getMemberStatus(updates.endDate)
+            : updates.status === 'expired'
+            ? 'Expired'
+            : updates.status === 'expiring'
+            ? 'Expiring Soon'
+            : updates.status === 'active'
+            ? 'Active'
+            : m.status;
+
+          return {
+            ...m,
+            ...updates,
+            status: resolvedStatus,
+          };
+        }
+        return m;
+      })
+    );
+    sub.emit();
+  });
+
+  // 2. Update in Universal Shared collection (/members)
   const membersColl = getMembersCollectionRef();
   const snap = await getDocs(membersColl);
-  const target = snap.docs.find((d) => {
+  const matchedDocs = snap.docs.filter((d) => {
     const data = d.data();
-    return data.memberId === memberId || d.id === memberId;
+    const dMemId = (data.memberId || '').toString().trim().toLowerCase();
+    const dDocId = d.id.trim().toLowerCase();
+    return dMemId === cleanIdLower || dDocId === cleanIdLower;
   });
-  if (target) {
-    await updateDoc(doc(membersColl, target.id), {
-      ...updates,
-      updatedAt: serverTimestamp(),
-    });
+
+  if (matchedDocs.length > 0) {
+    for (const d of matchedDocs) {
+      await updateDoc(doc(membersColl, d.id), {
+        ...updates,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    }
   } else {
-    // If not found in global, look in store-level collection and migrate to global
-    try {
-      const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
-      const storeSnap = await getDocs(storeMembersColl);
-      const storeTarget = storeSnap.docs.find((d) => {
-        const data = d.data();
-        return data.memberId === memberId || d.id === memberId;
-      });
-      if (storeTarget) {
-        await setDoc(doc(membersColl, memberId), {
-          ...storeTarget.data(),
-          ...updates,
-          registeredStore: businessName,
-          updatedAt: serverTimestamp(),
-        }, { merge: true });
-      }
-    } catch {}
+    await setDoc(
+      doc(membersColl, cleanId),
+      {
+        memberId: cleanId,
+        ...updates,
+        registeredStore: businessName,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    ).catch(() => {});
   }
+
+  // Also update store-level copy if exists
+  try {
+    const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
+    const storeSnap = await getDocs(storeMembersColl);
+    for (const d of storeSnap.docs) {
+      const data = d.data();
+      const dMemId = (data.memberId || '').toString().trim().toLowerCase();
+      const dDocId = d.id.trim().toLowerCase();
+      if (dMemId === cleanIdLower || dDocId === cleanIdLower) {
+        await updateDoc(doc(storeMembersColl, d.id), {
+          ...updates,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
+    }
+  } catch {}
 
   dbBroadcastEvent(businessName, {
     type: 'membership',
     title: '✏️ Member Updated',
-    message: `Updated profile for member ${updates.name || memberId} across all store terminals.`,
+    message: `Updated profile for member ${updates.name || cleanId} across all store terminals.`,
     timestamp: getBruneiFormattedTime(new Date(), true),
-    memberId,
+    memberId: cleanId,
   }).catch((e) => console.warn('Broadcast notice:', e));
 }
 
