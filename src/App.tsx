@@ -85,7 +85,25 @@ export function App() {
   const getTodayIsoDate = () => getBruneiTodayIsoDate();
 
   const [selectedDate, setSelectedDate] = useState<string>(getTodayIsoDate());
-  const [activeTab, setActiveTab] = useState<TabId>('sales');
+  const [activeTab, setActiveTab] = useState<TabId>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const redirectTab = sessionStorage.getItem('gym_active_tab') || localStorage.getItem('gym_active_tab');
+        if (redirectTab) {
+          sessionStorage.removeItem('gym_active_tab');
+          return redirectTab as TabId;
+        }
+      } catch {}
+    }
+    return 'sales';
+  });
+
+  const handleTabChange = (tab: TabId) => {
+    setActiveTab(tab);
+    try {
+      localStorage.setItem('gym_active_tab', tab);
+    } catch {}
+  };
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCheckinMode, setIsCheckinMode] = useState<boolean>(() => {
@@ -160,9 +178,9 @@ export function App() {
   // Multi-Store Terminal State (persisted in localStorage)
   const [currentBusinessName, setCurrentBusinessName] = useState<string>(() => {
     try {
-      return localStorage.getItem('current_business_name') || '';
+      return localStorage.getItem('current_business_name') || 'Binti Gym';
     } catch {
-      return '';
+      return 'Binti Gym';
     }
   });
 
@@ -174,9 +192,7 @@ export function App() {
     }
   });
 
-  const [showBusinessAuthModal, setShowBusinessAuthModal] = useState<boolean>(
-    () => !currentBusinessName || !currentBusinessPin
-  );
+  const [showBusinessAuthModal, setShowBusinessAuthModal] = useState<boolean>(false);
 
   const [currentStore, setCurrentStore] = useState<string>(() => {
     return currentBusinessName || localStorage.getItem('current_store_name') || 'Binti Gym';
@@ -1457,7 +1473,7 @@ export function App() {
         {/* Navigation Tabs Bar (Positioned between Gross Sales & Payment Method Summary) */}
         <NavigationTabs
           activeTab={activeTab}
-          onTabChange={setActiveTab}
+          onTabChange={handleTabChange}
           activeShift={activeShift}
           onOpenShiftModal={() => setShowShiftModal(true)}
           onToggleCheckinMode={handleEnterCheckinMode}
@@ -1466,7 +1482,7 @@ export function App() {
         />
 
         {/* Active Tab View Content / Locked Screen */}
-        {!activeShift ? (
+        {!activeShift && activeTab !== 'sheets' ? (
           <div className="bg-slate-900/95 border-2 border-rose-500/30 p-8 sm:p-12 rounded-3xl shadow-2xl text-center flex flex-col items-center justify-center space-y-5">
             <div className="w-16 h-16 rounded-3xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shadow-inner">
               <Lock className="w-8 h-8" />
