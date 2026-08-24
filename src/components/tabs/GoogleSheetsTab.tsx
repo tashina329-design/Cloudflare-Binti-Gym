@@ -35,9 +35,12 @@ import {
 import {
   initAuth,
   googleSignIn,
+  googleSignInRedirect,
   googleSignOut,
   getAccessToken,
   setManualAccessToken,
+  isMobileDevice,
+  isIOS,
   AuthUser
 } from '../../lib/googleAuth';
 import {
@@ -107,6 +110,10 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
   const [isSubmittingManualToken, setIsSubmittingManualToken] = useState(false);
   const [showWipeZeroModal, setShowWipeZeroModal] = useState(false);
   const [isWipingDatabase, setIsWipingDatabase] = useState(false);
+  const [showMobileTips, setShowMobileTips] = useState(false);
+
+  const isMobile = typeof window !== 'undefined' ? isMobileDevice() : false;
+  const isApple = typeof window !== 'undefined' ? isIOS() : false;
 
   const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
 
@@ -164,7 +171,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
   const fmtCurrency = (val: number) => `$${(Number(val) || 0).toFixed(2)}`;
 
-  const loadSpreadsheetForStore = useCallback(async (accessToken: string, storeName: string, customId?: string) => {
+  const loadSpreadsheetForStore = useCallback(async (accessToken: string | null | undefined, storeName: string, customId?: string) => {
     setIsLoadingSpreadsheet(true);
     setErrorMsg(null);
     try {
@@ -172,22 +179,38 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       const stored = await dbGetStoreSpreadsheet(storeName);
       const targetId = customId || stored?.spreadsheetId;
 
-      const info = await findOrCreateGymSpreadsheet(accessToken, storeName, targetId);
-      setSpreadsheet(info);
-
-      // Save to Firestore so other terminals for this same store use the same sheet
-      await dbSaveStoreSpreadsheet(storeName, info);
+      if (accessToken) {
+        const info = await findOrCreateGymSpreadsheet(accessToken, storeName, targetId);
+        setSpreadsheet(info);
+        await dbSaveStoreSpreadsheet(storeName, info);
+      } else if (targetId) {
+        const verified = await verifyAndGetSpreadsheetInfo(null, targetId);
+        setSpreadsheet(verified);
+      } else if (stored) {
+        setSpreadsheet(stored);
+      }
 
       // Load store-specific last sync time
       const savedTime = localStorage.getItem(`last_sheets_sync_time_${storeName}`);
       setLastSynced(savedTime || null);
     } catch (err: any) {
       console.error('Failed to load store spreadsheet:', err);
-      setErrorMsg(err.message || `Unable to access Google Drive/Sheets for ${storeName}. Please check permissions.`);
+      if (accessToken) {
+        setErrorMsg(err.message || `Unable to access Google Drive/Sheets for ${storeName}. Please check permissions.`);
+      }
     } finally {
       setIsLoadingSpreadsheet(false);
     }
   }, []);
+
+  // Preload store spreadsheet from Firestore on mount
+  useEffect(() => {
+    dbGetStoreSpreadsheet(effectiveStore).then((stored) => {
+      if (stored) {
+        setSpreadsheet(stored);
+      }
+    }).catch(() => {});
+  }, [effectiveStore]);
 
   // Initialize Auth state
   useEffect(() => {
@@ -200,7 +223,6 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       () => {
         setUser(null);
         setToken(null);
-        setSpreadsheet(null);
       }
     );
     return () => unsubscribe();
@@ -232,18 +254,29 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
     }
   };
 
+  const handleMobileRedirectSignIn = async () => {
+    setIsSigningIn(true);
+    setErrorMsg(null);
+    try {
+      await googleSignInRedirect();
+    } catch (err: any) {
+      console.error('Redirect sign in error:', err);
+      setErrorMsg(err.message || 'Mobile redirect sign-in failed. Please try the Direct Sheet Link option below.');
+      setIsSigningIn(false);
+    }
+  };
+
   const handleSignOut = async () => {
     await googleSignOut();
     setUser(null);
     setToken(null);
-    setSpreadsheet(null);
     setSuccessMsg('Signed out of Google Workspace.');
   };
 
   const handleCreateDedicatedStoreSheet = async () => {
     let activeToken = token || getAccessToken();
     if (!activeToken) {
-      setErrorMsg('Google session expired. Please sign in again.');
+      setErrorMsg('Google session expired. Please sign in to Google to create new files in your Google Drive.');
       return;
     }
 
@@ -269,11 +302,6 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
     if (!customSheetInput.trim()) return;
 
     let activeToken = token || getAccessToken();
-    if (!activeToken) {
-      setErrorMsg('Google session expired. Please sign in again.');
-      return;
-    }
-
     setIsSavingCustomSheet(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -282,36 +310,40 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       const verified = await verifyAndGetSpreadsheetInfo(activeToken, cleanId);
       setSpreadsheet(verified);
       await dbSaveStoreSpreadsheet(effectiveStore, verified);
-      setSuccessMsg(`Successfully linked custom spreadsheet: "${verified.title}" to ${effectiveStore}!`);
+      setSuccessMsg(`Successfully linked spreadsheet: "${verified.title}" to ${effectiveStore}!`);
       setCustomSheetInput('');
       setShowConfigOptions(false);
     } catch (err: any) {
       console.error('Failed to link custom spreadsheet:', err);
-      setErrorMsg(err.message || 'Invalid spreadsheet ID or URL. Ensure your Google account has access to it.');
+      setErrorMsg(err.message || 'Invalid spreadsheet ID or URL. Ensure your Google account has access to it or the link is shared.');
     } finally {
       setIsSavingCustomSheet(false);
     }
   };
 
   const handleUnlinkStoreSheet = async () => {
-    let activeToken = token || getAccessToken();
-    if (!activeToken) return;
-
     try {
       await dbClearStoreSpreadsheet(effectiveStore);
       setSpreadsheet(null);
       setSuccessMsg(`Unlinked spreadsheet for ${effectiveStore}. You can now link or create a new sheet.`);
       setShowConfigOptions(false);
-      // Re-find or create default
-      loadSpreadsheetForStore(activeToken, effectiveStore);
+      let activeToken = token || getAccessToken();
+      if (activeToken) {
+        loadSpreadsheetForStore(activeToken, effectiveStore);
+      }
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to unlink spreadsheet.');
     }
   };
 
   const handleTriggerSync = () => {
-    if (!token || !spreadsheet) {
-      setErrorMsg('Please connect your Google Account first.');
+    let activeToken = token || getAccessToken();
+    if (!activeToken) {
+      setErrorMsg('Direct Push to Google Sheets requires Google Sign-In with write permission. Please sign in to your Google Account above or use the Pull from Sheet option.');
+      return;
+    }
+    if (!spreadsheet) {
+      setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
     setShowConfirmModal(true);
@@ -319,10 +351,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
   const executeSync = async () => {
     setShowConfirmModal(false);
-    let activeToken = token;
-    if (!activeToken) {
-      activeToken = getAccessToken();
-    }
+    let activeToken = token || getAccessToken();
     if (!activeToken || !spreadsheet) {
       setErrorMsg('Google session expired. Please sign in again.');
       return;
@@ -358,11 +387,11 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
   // 1-Click Import of ALL logs from Google Sheets (Sales, Expenses, Attendance, Members)
   const handlePullAllLogs = async () => {
-    let activeToken = token || getAccessToken();
-    if (!activeToken || !spreadsheet) {
-      setErrorMsg('Please connect your Google Account first.');
+    if (!spreadsheet) {
+      setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
+    let activeToken = token || getAccessToken();
 
     setIsPullingAll(true);
     setErrorMsg(null);
@@ -373,7 +402,11 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       const totalRowsFound = allData.sales.length + allData.expenses.length + allData.attendance.length + allData.members.length;
 
       if (totalRowsFound === 0) {
-        setErrorMsg('No log rows found across your Google Sheets tabs (Sales Log, Expenses Log, Check-In Log, Members Directory). Please check the tab names and data formatting.');
+        if (!activeToken) {
+          setErrorMsg('No log rows found in this Google Sheet. If your sheet is private, please set link sharing to "Anyone with the link can view" or sign in with your Google Account.');
+        } else {
+          setErrorMsg('No log rows found across your Google Sheets tabs (Sales Log, Expenses Log, Check-In Log, Members Directory). Please check tab names.');
+        }
         return;
       }
 
@@ -399,11 +432,11 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
   // Pull individual Sales Log
   const handlePullSales = async () => {
-    let activeToken = token || getAccessToken();
-    if (!activeToken || !spreadsheet) {
-      setErrorMsg('Please connect your Google Account first.');
+    if (!spreadsheet) {
+      setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
+    let activeToken = token || getAccessToken();
 
     setIsPullingSales(true);
     setErrorMsg(null);
@@ -427,11 +460,11 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
   // Pull individual Expenses Log
   const handlePullExpenses = async () => {
-    let activeToken = token || getAccessToken();
-    if (!activeToken || !spreadsheet) {
-      setErrorMsg('Please connect your Google Account first.');
+    if (!spreadsheet) {
+      setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
+    let activeToken = token || getAccessToken();
 
     setIsPullingExpenses(true);
     setErrorMsg(null);
@@ -455,11 +488,11 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
   // Pull individual Check-In Log
   const handlePullAttendance = async () => {
-    let activeToken = token || getAccessToken();
-    if (!activeToken || !spreadsheet) {
-      setErrorMsg('Please connect your Google Account first.');
+    if (!spreadsheet) {
+      setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
+    let activeToken = token || getAccessToken();
 
     setIsPullingAttendance(true);
     setErrorMsg(null);
@@ -483,11 +516,11 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
   // Pull Members Directory
   const handlePullMembers = async () => {
-    let activeToken = token || getAccessToken();
-    if (!activeToken || !spreadsheet) {
-      setErrorMsg('Please connect your Google Account first.');
+    if (!spreadsheet) {
+      setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
+    let activeToken = token || getAccessToken();
 
     setIsPullingMembers(true);
     setErrorMsg(null);
@@ -542,61 +575,68 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                  Google Sheets Two-Way Sync & Historical Importer
+                  Google Sheets Two-Way Sync & Importer
                 </h2>
                 <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30 flex items-center gap-1">
-                  <Store className="w-3 h-3 text-emerald-400" />
                   Terminal Store: {effectiveStore}
                 </span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-medium border border-slate-700">
-                  Two-Way Push & Pull
-                </span>
+                {isMobile && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 font-semibold border border-sky-500/30 flex items-center gap-1">
+                    <Smartphone className="w-3 h-3 text-sky-400" />
+                    {isApple ? 'iOS Safari Mode' : 'Mobile Mode'}
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Put your previous records in your Google Sheet tabs (Sales Log, Expenses Log, Check-In Log, Members), then click Pull to catch everything inside your POS terminal in real-time.
+              <p className="text-xs text-slate-400">
+                Push live gym transactions, members, and attendance, or pull historical records directly into your terminal.
               </p>
             </div>
           </div>
         </div>
 
-        {user ? (
-          <div className="flex items-center gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
-            {user.photoURL ? (
-              <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full border border-slate-700" />
-            ) : (
-              <div className="w-8 h-8 rounded-full bg-emerald-500 text-slate-950 font-bold flex items-center justify-center text-xs">
-                {user.email?.[0].toUpperCase() || 'G'}
+        {/* User Account / Auth pill */}
+        <div className="flex items-center gap-3">
+          {user ? (
+            <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl text-xs">
+              <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-300 font-bold flex items-center justify-center text-[10px] uppercase">
+                {user.email?.[0] || 'G'}
               </div>
-            )}
-            <div className="text-xs">
-              <p className="font-bold text-slate-200">{user.displayName || 'Connected Account'}</p>
-              <p className="text-[11px] text-slate-400 font-mono">{user.email}</p>
+              <div className="flex flex-col text-left">
+                <span className="text-white font-medium text-[11px] truncate max-w-[120px]">{user.displayName || user.email}</span>
+                <span className="text-[9px] text-emerald-400 font-mono">Google Connected</span>
+              </div>
+              <button
+                onClick={handleSignOut}
+                className="ml-2 text-slate-400 hover:text-rose-400 transition cursor-pointer text-[10px]"
+                title="Disconnect Google Account"
+              >
+                Sign Out
+              </button>
             </div>
-            <button
-              onClick={handleSignOut}
-              title="Sign Out"
-              className="ml-2 p-2 hover:bg-slate-800 text-slate-400 hover:text-rose-400 rounded-lg transition-colors cursor-pointer"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
-        ) : (
-          <div>
-            <button
-              onClick={handleSignIn}
-              disabled={isSigningIn}
-              className="flex items-center gap-3 px-4 py-2.5 bg-white text-slate-800 hover:bg-slate-100 font-bold rounded-xl text-xs shadow-md transition-all border border-slate-300 disabled:opacity-50 cursor-pointer"
-            >
-              <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-4 h-4">
-                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-              </svg>
-              {isSigningIn ? 'Connecting...' : 'Sign in with Google'}
-            </button>
-          </div>
-        )}
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleSignIn}
+                disabled={isSigningIn}
+                className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 transition shadow cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                {isSigningIn ? 'Connecting...' : 'Sign in with Google'}
+              </button>
+              {isMobile && (
+                <button
+                  onClick={handleMobileRedirectSignIn}
+                  disabled={isSigningIn}
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-500/30 font-bold rounded-xl text-xs flex items-center gap-1.5 transition cursor-pointer"
+                  title="Use full page redirect if popup is blocked on mobile"
+                >
+                  <Smartphone className="w-3.5 h-3.5" />
+                  Mobile Redirect
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Error & Success Messages */}
@@ -606,9 +646,9 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <span className="font-semibold">{errorMsg}</span>
-              {(errorMsg.includes('authorized') || errorMsg.includes('domain') || errorMsg.includes('invalid')) && (
-                <p className="text-[11px] text-rose-300/80">
-                  Firebase Authentication requires any domain where your app is deployed (e.g. Vercel) to be listed under <strong>Authorized Domains</strong> in the Firebase Console.
+              {(errorMsg.includes('authorized') || errorMsg.includes('domain') || errorMsg.includes('popup') || errorMsg.includes('iOS') || errorMsg.includes('Android')) && (
+                <p className="text-[11px] text-rose-300/90 mt-1">
+                  💡 <strong>Mobile Quick Tip:</strong> On iOS Safari / Android Chrome, popups may be blocked. You can connect instantly without logging in by simply pasting your Google Sheet URL in the <strong>"Link Custom Google Sheet"</strong> box below!
                 </p>
               )}
             </div>
@@ -618,7 +658,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
             <div className="p-4 bg-slate-900 border border-amber-500/40 rounded-xl space-y-3 text-xs">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <span className="font-bold text-amber-300 flex items-center gap-1.5">
-                  <Globe className="w-4 h-4 text-amber-400" /> Quick 2-Minute Fix for Vercel / Custom Domains:
+                  <Globe className="w-4 h-4 text-amber-400" /> Firebase Authorized Domain Notice:
                 </span>
                 <button
                   type="button"
@@ -630,23 +670,9 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
                 </button>
               </div>
 
-              <ol className="list-decimal list-inside space-y-1.5 text-slate-300 text-[11px] leading-relaxed">
-                <li>
-                  Open the <a href="https://console.firebase.google.com/project/gen-lang-client-0329117938/authentication/settings" target="_blank" rel="noreferrer" className="text-sky-400 underline hover:text-sky-300 font-bold inline-flex items-center gap-0.5">Firebase Console Auth Settings <ExternalLink className="w-3 h-3" /></a>.
-                </li>
-                <li>
-                  Scroll down to the <strong>Authorized domains</strong> section.
-                </li>
-                <li>
-                  Click <strong>Add domain</strong> and paste your Vercel domain: <code className="bg-slate-950 px-1.5 py-0.5 rounded text-amber-300 font-mono font-bold">{currentHost || 'your-app.vercel.app'}</code> (and <code className="bg-slate-950 px-1.5 py-0.5 rounded text-amber-300 font-mono font-bold">vercel.app</code>).
-                </li>
-                <li>
-                  Ensure Google Sign-in provider is enabled under <a href="https://console.firebase.google.com/project/gen-lang-client-0329117938/authentication/providers" target="_blank" rel="noreferrer" className="text-sky-400 underline hover:text-sky-300 font-bold inline-flex items-center gap-0.5">Sign-in method <ExternalLink className="w-3 h-3" /></a>.
-                </li>
-                <li>
-                  Refresh this page and click <strong>Sign in with Google</strong> again.
-                </li>
-              </ol>
+              <p className="text-slate-300 text-[11px] leading-relaxed">
+                If using custom domain hosting, add <code className="bg-slate-950 px-1.5 py-0.5 rounded text-amber-300 font-mono font-bold">{currentHost || 'your domain'}</code> to Firebase Auth Authorized Domains. Alternatively, use the <strong>Direct Sheet Link</strong> method below which works on all devices without domain restrictions.
+              </p>
             </div>
           )}
         </div>
@@ -659,66 +685,150 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
         </div>
       )}
 
-      {/* Main Connection Status Card */}
-      {!user ? (
-        <div className="p-8 bg-slate-900 border border-slate-800 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-6">
+      {/* Main Connection Status Card when neither user nor spreadsheet is connected */}
+      {!user && !spreadsheet ? (
+        <div className="p-6 md:p-8 bg-slate-900 border border-slate-800 rounded-2xl text-center space-y-6 max-w-2xl mx-auto my-4">
           <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto">
             <ShieldCheck className="w-6 h-6" />
           </div>
-          <h3 className="text-base font-bold text-white">Google Workspace Auth Required</h3>
-          <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-            Connect your Google account to enable live synchronization with Google Sheets for <strong className="text-white">{effectiveStore}</strong>. Each store maintains its own separate Google Spreadsheet in your Google Drive.
-          </p>
-          <div className="flex flex-col items-center gap-3">
-            <button
-              onClick={handleSignIn}
-              disabled={isSigningIn}
-              className="px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-lg shadow-emerald-950/40 flex items-center gap-2 mx-auto cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4" />
-              {isSigningIn ? 'Connecting to Google...' : 'Connect Google Workspace Account'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowManualToken(!showManualToken)}
-              className="text-[11px] text-slate-400 hover:text-slate-200 underline transition cursor-pointer"
-            >
-              {showManualToken ? 'Hide token option' : 'Or connect using an OAuth Access Token directly'}
-            </button>
+          
+          <div className="space-y-2">
+            <h3 className="text-base font-bold text-white">Connect Google Sheet for {effectiveStore}</h3>
+            <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+              Connect your Google account or link any Google Spreadsheet to enable live syncing and historical log importing across desktop and mobile.
+            </p>
           </div>
 
-          {showManualToken && (
-            <form onSubmit={handleManualTokenSubmit} className="pt-3 border-t border-slate-800 space-y-3 text-left animate-in fade-in">
-              <p className="text-[11px] text-slate-300">
-                Paste a Google OAuth Access Token with Spreadsheet and Drive permissions:
-              </p>
-              <div className="space-y-2">
+          {/* Connection Method Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+            {/* Method A: Google Account Sign-In */}
+            <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-col justify-between space-y-3">
+              <div className="space-y-1">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-emerald-400" /> Option 1: Google Account Sign-In
+                </span>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Automatically creates or connects dedicated spreadsheets directly in your Google Drive.
+                </p>
+              </div>
+
+              <div className="space-y-2 pt-2">
+                <button
+                  onClick={handleSignIn}
+                  disabled={isSigningIn}
+                  className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs transition shadow flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  {isSigningIn ? 'Signing in...' : 'Sign in with Google'}
+                </button>
+
+                <button
+                  onClick={handleMobileRedirectSignIn}
+                  disabled={isSigningIn}
+                  className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-sky-300 border border-sky-500/30 font-semibold rounded-lg text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer"
+                >
+                  <Smartphone className="w-3.5 h-3.5 text-sky-400" />
+                  Mobile Redirect Mode (iOS/Android)
+                </button>
+              </div>
+            </div>
+
+            {/* Method B: Direct Google Sheet URL Link (No login required) */}
+            <form onSubmit={handleLinkCustomSheet} className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-col justify-between space-y-3">
+              <div className="space-y-1">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Link2 className="w-4 h-4 text-sky-400" /> Option 2: Direct Sheet Link / ID
+                </span>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Paste your Google Spreadsheet link. Works 100% on iOS, Android, and tablets without login.
+                </p>
+              </div>
+
+              <div className="space-y-2 pt-2">
                 <input
                   type="text"
-                  placeholder="Paste Google Access Token (ya29...)"
-                  value={manualTokenInput}
-                  onChange={(e) => setManualTokenInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-mono"
-                />
-                <input
-                  type="email"
-                  placeholder="Your Google Email (optional, e.g. manager@gmail.com)"
-                  value={manualEmailInput}
-                  onChange={(e) => setManualEmailInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  placeholder="Paste Google Sheet URL or ID..."
+                  value={customSheetInput}
+                  onChange={(e) => setCustomSheetInput(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
                 />
                 <button
                   type="submit"
-                  disabled={isSubmittingManualToken || !manualTokenInput.trim()}
-                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  disabled={isSavingCustomSheet || !customSheetInput.trim()}
+                  className="w-full py-2 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
                 >
                   <Check className="w-3.5 h-3.5" />
-                  {isSubmittingManualToken ? 'Connecting...' : 'Connect with Token'}
+                  {isSavingCustomSheet ? 'Connecting...' : `Connect Sheet to ${effectiveStore}`}
                 </button>
               </div>
             </form>
-          )}
+          </div>
+
+          {/* iOS / Android Connection Guidance helper */}
+          <div className="border-t border-slate-800 pt-3 text-left">
+            <button
+              type="button"
+              onClick={() => setShowMobileTips(!showMobileTips)}
+              className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+            >
+              <HelpCircle className="w-3.5 h-3.5 text-sky-400" />
+              {showMobileTips ? 'Hide mobile connection tips' : 'Need help connecting on iPhone, iPad, or Android?'}
+            </button>
+
+            {showMobileTips && (
+              <div className="mt-3 p-3.5 bg-slate-950 border border-slate-800 rounded-xl text-xs space-y-2 animate-in fade-in">
+                <p className="font-semibold text-slate-200">📱 Mobile & Tablet Connection Guide:</p>
+                <ol className="list-decimal list-inside space-y-1 text-slate-400 text-[11px] leading-relaxed">
+                  <li><strong>Fastest Method:</strong> In Google Sheets, tap <em>Share & export &gt; Manage access &gt; Anyone with the link can view</em>, copy the link, and paste it in <strong>Option 2: Direct Sheet Link</strong> above.</li>
+                  <li><strong>Google Sign-In:</strong> If Safari or Chrome blocks popups, tap <strong>Mobile Redirect Mode</strong> above to open the full-screen Google authorization page.</li>
+                  <li><strong>Multi-Device:</strong> Once connected, your store's spreadsheet is stored in the database and automatically accessible by staff across all phones and tablets!</li>
+                </ol>
+              </div>
+            )}
+          </div>
+
+          {/* Direct Manual Token Dropdown */}
+          <div className="pt-2 text-center">
+            <button
+              type="button"
+              onClick={() => setShowManualToken(!showManualToken)}
+              className="text-[11px] text-slate-500 hover:text-slate-300 underline transition cursor-pointer"
+            >
+              {showManualToken ? 'Hide developer token option' : 'Or connect using OAuth Developer Access Token'}
+            </button>
+
+            {showManualToken && (
+              <form onSubmit={handleManualTokenSubmit} className="mt-3 p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-left animate-in fade-in">
+                <p className="text-[11px] text-slate-300">
+                  Paste a Google OAuth Access Token with Spreadsheet permissions:
+                </p>
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    placeholder="Paste Google Access Token (ya29...)"
+                    value={manualTokenInput}
+                    onChange={(e) => setManualTokenInput(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                  <input
+                    type="email"
+                    placeholder="Your Google Email (optional)"
+                    value={manualEmailInput}
+                    onChange={(e) => setManualEmailInput(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isSubmittingManualToken || !manualTokenInput.trim()}
+                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    {isSubmittingManualToken ? 'Connecting...' : 'Connect with Token'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
