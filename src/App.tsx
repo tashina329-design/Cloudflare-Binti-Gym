@@ -1021,10 +1021,13 @@ export function App() {
       } else if (type === 'expense') {
         await dbDeleteExpense(currentStore, data);
       } else if (type === 'member') {
-        const mId = data.memberId || data;
+        const mId = (data.memberId || data || '').toString().trim();
+        const mIdLower = mId.toLowerCase();
         setDashboardData((prev) => ({
           ...prev,
-          members: prev.members.filter((m) => m.memberId !== mId),
+          members: prev.members.filter(
+            (m) => (m.memberId || '').trim().toLowerCase() !== mIdLower
+          ),
         }));
         await dbDeleteMember(currentStore, mId);
       }
