@@ -248,6 +248,10 @@ function getBusinessCollectionRef(businessName: string, subcollection: string) {
   return collection(db, 'businesses', key, subcollection);
 }
 
+export function getMembersCollectionRef() {
+  return collection(db, 'members');
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   let timer: any;
   const timeoutPromise = new Promise<T>((resolve) => {
@@ -537,22 +541,22 @@ export async function seedInitialBusinessData(businessName: string, pin: string,
       )
     );
 
-    // 3. Seed members
+    // 3. Seed universal shared members directory
     const initialMembers = [
-      { memberId: 'MEM-100241', name: 'Ahmad Daniel', phone: '8712345', plan: 'Standard Monthly', startDate: start30Ago, endDate: end30Later, status: 'Active' },
-      { memberId: 'MEM-204891', name: 'Siti Nurhaliza', phone: '8823456', plan: 'Student Monthly', startDate: start30Ago, endDate: end5Later, status: 'Expiring Soon' },
-      { memberId: 'MEM-309123', name: 'Markus Vance', phone: '8934567', plan: 'Standard Monthly', startDate: '2026-05-01', endDate: end10Ago, status: 'Expired' },
-      { memberId: 'MEM-401928', name: 'Jessica Tan', phone: '8765432', plan: 'Standard Monthly', startDate: start30Ago, endDate: end30Later, status: 'Active' },
-      { memberId: 'MEM-501192', name: 'Hajah Maryam', phone: '8899112', plan: 'VIP Yearly', startDate: start30Ago, endDate: end365Later, status: 'Active' },
-      { memberId: 'MEM-602819', name: 'Mohammad Razi', phone: '8776655', plan: 'Standard Monthly', startDate: start30Ago, endDate: end30Later, status: 'Active' },
-      { memberId: 'MEM-703412', name: 'Kevin Lim', phone: '8654321', plan: 'Student Monthly', startDate: start30Ago, endDate: end5Later, status: 'Expiring Soon' },
-      { memberId: 'MEM-804923', name: 'Dayang Faridah', phone: '8991234', plan: 'Standard Monthly', startDate: start30Ago, endDate: end30Later, status: 'Active' },
+      { memberId: 'MEM-100241', name: 'Ahmad Daniel', phone: '8712345', plan: 'Standard Monthly', startDate: start30Ago, endDate: end30Later, status: 'Active', registeredStore: cleanName },
+      { memberId: 'MEM-204891', name: 'Siti Nurhaliza', phone: '8823456', plan: 'Student Monthly', startDate: start30Ago, endDate: end5Later, status: 'Expiring Soon', registeredStore: cleanName },
+      { memberId: 'MEM-309123', name: 'Markus Vance', phone: '8934567', plan: 'Standard Monthly', startDate: '2026-05-01', endDate: end10Ago, status: 'Expired', registeredStore: cleanName },
+      { memberId: 'MEM-401928', name: 'Jessica Tan', phone: '8765432', plan: 'Standard Monthly', startDate: start30Ago, endDate: end30Later, status: 'Active', registeredStore: cleanName },
+      { memberId: 'MEM-501192', name: 'Hajah Maryam', phone: '8899112', plan: 'VIP Yearly', startDate: start30Ago, endDate: end365Later, status: 'Active', registeredStore: cleanName },
+      { memberId: 'MEM-602819', name: 'Mohammad Razi', phone: '8776655', plan: 'Standard Monthly', startDate: start30Ago, endDate: end30Later, status: 'Active', registeredStore: cleanName },
+      { memberId: 'MEM-703412', name: 'Kevin Lim', phone: '8654321', plan: 'Student Monthly', startDate: start30Ago, endDate: end5Later, status: 'Expiring Soon', registeredStore: cleanName },
+      { memberId: 'MEM-804923', name: 'Dayang Faridah', phone: '8991234', plan: 'Standard Monthly', startDate: start30Ago, endDate: end30Later, status: 'Active', registeredStore: cleanName },
     ];
-    const membersColl = getBusinessCollectionRef(cleanName, 'members');
+    const globalMembersColl = getMembersCollectionRef();
     for (const m of initialMembers) {
       promises.push(
         setDoc(
-          doc(membersColl, m.memberId),
+          doc(globalMembersColl, m.memberId),
           {
             ...m,
             deviceId,
@@ -883,26 +887,60 @@ export function subscribeFirestoreBusiness(
     );
     unsubs.push(unsubBiz);
 
-    // 2. Members subcollection listener
-    const membersRef = getBusinessCollectionRef(cleanName, 'members');
+    // 2. Universal Shared Members Directory listener (Shared across all registered stores)
+    const membersRef = getMembersCollectionRef();
     const unsubMembers = onSnapshot(
       membersRef,
-      (snap) => {
-        liveMembers = snap.docs.map((d) => {
-          const data = d.data();
-          return {
-            memberId: data.memberId || d.id,
-            name: data.name || '',
-            phone: data.phone || '',
-            plan: data.plan || '',
-            startDate: data.startDate || '',
-            endDate: data.endDate || '',
-            status: getMemberStatus(data.endDate, activeDate),
-          };
-        });
+      async (snap) => {
+        if (!snap.empty) {
+          liveMembers = snap.docs.map((d) => {
+            const data = d.data();
+            return {
+              memberId: data.memberId || d.id,
+              name: data.name || '',
+              phone: data.phone || '',
+              plan: data.plan || '',
+              startDate: data.startDate || '',
+              endDate: data.endDate || '',
+              status: getMemberStatus(data.endDate, activeDate),
+              registeredStore: data.registeredStore,
+            };
+          });
+        } else {
+          // If global shared collection is empty, migrate any legacy store-level members seamlessly
+          try {
+            const legacyStoreMembersRef = getBusinessCollectionRef(cleanName, 'members');
+            const legacySnap = await getDocs(legacyStoreMembersRef);
+            if (!legacySnap.empty) {
+              const legacyList: Member[] = [];
+              for (const legDoc of legacySnap.docs) {
+                const legData = legDoc.data();
+                const memObj: Member = {
+                  memberId: legData.memberId || legDoc.id,
+                  name: legData.name || '',
+                  phone: legData.phone || '',
+                  plan: legData.plan || '',
+                  startDate: legData.startDate || '',
+                  endDate: legData.endDate || '',
+                  status: getMemberStatus(legData.endDate, activeDate),
+                  registeredStore: legData.registeredStore || cleanName,
+                };
+                legacyList.push(memObj);
+                setDoc(doc(getMembersCollectionRef(), memObj.memberId), {
+                  ...legData,
+                  ...memObj,
+                  updatedAt: serverTimestamp(),
+                }, { merge: true }).catch(() => {});
+              }
+              liveMembers = legacyList;
+            }
+          } catch (migErr) {
+            console.warn('Member migration note:', migErr);
+          }
+        }
         emitDashboard();
       },
-      (err) => console.warn('Members listener error:', err)
+      (err) => console.warn('Shared members listener error:', err)
     );
     unsubs.push(unsubMembers);
 
@@ -1069,11 +1107,21 @@ export async function dbCheckInPhone(businessName: string, phone: string): Promi
     };
   }
 
-  const membersRef = getBusinessCollectionRef(businessName, 'members');
-  const snap = await getDocs(membersRef);
-  const matched = snap.docs
+  // 1. Search universal shared members directory
+  const membersRef = getMembersCollectionRef();
+  let snap = await getDocs(membersRef);
+  let matched = snap.docs
     .map((d) => ({ id: d.id, ...(d.data() as Member) }))
     .filter((m) => matchesFullPhoneNumber(m.phone, cleanPhone));
+
+  // Fallback to store-level collection if not yet migrated
+  if (matched.length === 0) {
+    const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
+    const storeSnap = await getDocs(storeMembersRef);
+    matched = storeSnap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as Member) }))
+      .filter((m) => matchesFullPhoneNumber(m.phone, cleanPhone));
+  }
 
   if (matched.length === 0) {
     return {
@@ -1154,7 +1202,7 @@ export async function dbCheckInPhone(businessName: string, phone: string): Promi
   await dbBroadcastEvent(businessName, {
     type: 'checkin',
     title: '🔔 Member Check-In',
-    message: `${welcomeMessage} Checked in via phone (${cleanPhone})`,
+    message: `${welcomeMessage} Checked in via phone (${cleanPhone}) at ${businessName}`,
     timestamp: getBruneiFormattedTime(new Date(), true),
     memberName: member.name,
     memberId: member.memberId,
@@ -1180,11 +1228,20 @@ export async function dbCheckInPhone(businessName: string, phone: string): Promi
 export async function dbCheckInId(businessName: string, memberId: string): Promise<CheckInResponse> {
   await ensureFirebaseAuth();
   const cleanId = memberId.trim();
-  const membersRef = getBusinessCollectionRef(businessName, 'members');
-  const snap = await getDocs(membersRef);
-  const matched = snap.docs
+  const membersRef = getMembersCollectionRef();
+  let snap = await getDocs(membersRef);
+  let matched = snap.docs
     .map((d) => ({ id: d.id, ...(d.data() as Member) }))
     .find((m) => m.memberId.toLowerCase() === cleanId.toLowerCase());
+
+  // Fallback to store-level collection
+  if (!matched) {
+    const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
+    const storeSnap = await getDocs(storeMembersRef);
+    matched = storeSnap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as Member) }))
+      .find((m) => m.memberId.toLowerCase() === cleanId.toLowerCase());
+  }
 
   if (!matched) {
     return { success: false, notFound: true, message: `Member ID #${cleanId} not found.` };
@@ -1244,7 +1301,7 @@ export async function dbCheckInId(businessName: string, memberId: string): Promi
   await dbBroadcastEvent(businessName, {
     type: 'checkin',
     title: '🔔 Member Check-In',
-    message: `${welcomeMessage} (ID #${matched.memberId})`,
+    message: `${welcomeMessage} (ID #${matched.memberId}) at ${businessName}`,
     timestamp: getBruneiFormattedTime(new Date(), true),
     memberName: matched.name,
     memberId: matched.memberId,
@@ -1493,8 +1550,8 @@ export async function dbRegisterMember(
   const deviceId = getDeviceId();
   const memberId = 'MEM-' + Math.floor(100000 + Math.random() * 900000);
 
-  // 1. Member doc
-  const membersColl = getBusinessCollectionRef(businessName, 'members');
+  // 1. Save member profile to Universal Shared Collection (/members)
+  const membersColl = getMembersCollectionRef();
   await setDoc(doc(membersColl, memberId), {
     memberId,
     name: data.name,
@@ -1504,12 +1561,13 @@ export async function dbRegisterMember(
     endDate: data.endDate,
     price: Number(data.price) || 0,
     status: getMemberStatus(data.endDate),
+    registeredStore: businessName,
     deviceId,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
 
-  // 2. Sales doc
+  // 2. Save membership sale strictly to the current store sales log (/businesses/{businessName}/sales)
   const salesColl = getBusinessCollectionRef(businessName, 'sales');
   await addDoc(salesColl, {
     timestamp,
@@ -1527,7 +1585,7 @@ export async function dbRegisterMember(
   dbBroadcastEvent(businessName, {
     type: 'membership',
     title: '⭐ New Member Registered',
-    message: `Registered new member ${data.name} (${data.planType})`,
+    message: `Registered new member ${data.name} (${data.planType}) at ${businessName}`,
     timestamp: getBruneiFormattedTime(now, true),
     memberName: data.name,
     memberId,
@@ -1539,7 +1597,7 @@ export async function dbBatchUpsertMembers(
   membersToSave: Member[]
 ): Promise<{ added: number; updated: number }> {
   await ensureFirebaseAuth();
-  const membersColl = getBusinessCollectionRef(businessName, 'members');
+  const membersColl = getMembersCollectionRef();
   const snap = await getDocs(membersColl);
   const existingDocs = snap.docs.map((d) => ({ ...d.data(), id: d.id } as any));
 
@@ -1573,6 +1631,7 @@ export async function dbBatchUpsertMembers(
         endDate: m.endDate || '',
         status,
         price: Number((m as any).price) || 0,
+        registeredStore: m.registeredStore || existing?.registeredStore || businessName,
         deviceId,
         updatedAt: serverTimestamp(),
       },
@@ -1589,8 +1648,8 @@ export async function dbBatchUpsertMembers(
   if (added > 0 || updated > 0) {
     dbBroadcastEvent(businessName, {
       type: 'membership',
-      title: '📥 Google Sheets Sync',
-      message: `Pulled from Google Sheets: ${added} new and ${updated} updated member profiles.`,
+      title: '📥 Member Directory Sync',
+      message: `Updated Universal Member Directory: ${added} new and ${updated} updated member profiles.`,
       timestamp: getBruneiFormattedTime(new Date(), true),
     }).catch((e) => console.warn('Broadcast error:', e));
   }
@@ -1874,12 +1933,23 @@ export async function dbRenewMember(
   const timestamp = data.viewDate ? `${data.viewDate}T${now.toTimeString().split(' ')[0]}` : now.toISOString();
   const deviceId = getDeviceId();
 
-  const membersColl = getBusinessCollectionRef(businessName, 'members');
+  // 1. Update member in Universal Shared collection
+  const membersColl = getMembersCollectionRef();
   const snap = await getDocs(membersColl);
-  const memberDoc = snap.docs.find((d) => {
+  let memberDoc = snap.docs.find((d) => {
     const dData = d.data();
     return dData.memberId === data.memberId || d.id === data.memberId;
   });
+
+  // Fallback to store-level collection if not found in global
+  if (!memberDoc) {
+    const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
+    const storeSnap = await getDocs(storeMembersColl);
+    memberDoc = storeSnap.docs.find((d) => {
+      const dData = d.data();
+      return dData.memberId === data.memberId || d.id === data.memberId;
+    });
+  }
 
   let currentEnd = new Date();
   if (memberDoc) {
@@ -1893,15 +1963,21 @@ export async function dbRenewMember(
   const newEndDate = getBruneiTodayIsoDate(currentEnd);
 
   if (memberDoc) {
-    await updateDoc(doc(membersColl, memberDoc.id), {
-      endDate: newEndDate,
-      plan: data.planType,
-      status: 'Active',
-      updatedAt: serverTimestamp(),
-      deviceId,
-    });
+    await setDoc(
+      doc(membersColl, memberDoc.id),
+      {
+        endDate: newEndDate,
+        plan: data.planType,
+        status: 'Active',
+        lastRenewedStore: businessName,
+        updatedAt: serverTimestamp(),
+        deviceId,
+      },
+      { merge: true }
+    );
   }
 
+  // 2. Log renewal sales income strictly to the CURRENT STORE
   const salesColl = getBusinessCollectionRef(businessName, 'sales');
   await addDoc(salesColl, {
     timestamp,
@@ -1918,7 +1994,7 @@ export async function dbRenewMember(
   dbBroadcastEvent(businessName, {
     type: 'membership',
     title: '🔄 Membership Renewed',
-    message: `Renewed membership for #${data.memberId} (${data.planType})`,
+    message: `Renewed membership for #${data.memberId} (${data.planType}) at ${businessName}`,
     timestamp: getBruneiFormattedTime(now, true),
     memberId: data.memberId,
   }).catch((e) => console.warn('Broadcast notice:', e));
@@ -2084,7 +2160,8 @@ export async function dbDeleteExpense(businessName: string, expData: any) {
 
 export async function dbDeleteMember(businessName: string, memberId: string) {
   await ensureFirebaseAuth();
-  const membersColl = getBusinessCollectionRef(businessName, 'members');
+  // 1. Delete from Universal Shared collection (/members)
+  const membersColl = getMembersCollectionRef();
   const snap = await getDocs(membersColl);
   const target = snap.docs.find((d) => {
     const data = d.data();
@@ -2093,6 +2170,27 @@ export async function dbDeleteMember(businessName: string, memberId: string) {
   if (target) {
     await deleteDoc(doc(membersColl, target.id));
   }
+
+  // 2. Also delete from store-level collection if legacy doc exists
+  try {
+    const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
+    const storeSnap = await getDocs(storeMembersColl);
+    const storeTarget = storeSnap.docs.find((d) => {
+      const data = d.data();
+      return data.memberId === memberId || d.id === memberId;
+    });
+    if (storeTarget) {
+      await deleteDoc(doc(storeMembersColl, storeTarget.id));
+    }
+  } catch {}
+
+  dbBroadcastEvent(businessName, {
+    type: 'membership',
+    title: '🗑️ Member Deleted',
+    message: `Member #${memberId} removed from Universal Member Directory.`,
+    timestamp: getBruneiFormattedTime(new Date(), true),
+    memberId,
+  }).catch((e) => console.warn('Broadcast notice:', e));
 }
 
 export async function dbUpdateMember(
@@ -2108,7 +2206,8 @@ export async function dbUpdateMember(
   }
 ) {
   await ensureFirebaseAuth();
-  const membersColl = getBusinessCollectionRef(businessName, 'members');
+  // 1. Update in Universal Shared collection (/members)
+  const membersColl = getMembersCollectionRef();
   const snap = await getDocs(membersColl);
   const target = snap.docs.find((d) => {
     const data = d.data();
@@ -2119,7 +2218,33 @@ export async function dbUpdateMember(
       ...updates,
       updatedAt: serverTimestamp(),
     });
+  } else {
+    // If not found in global, look in store-level collection and migrate to global
+    try {
+      const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
+      const storeSnap = await getDocs(storeMembersColl);
+      const storeTarget = storeSnap.docs.find((d) => {
+        const data = d.data();
+        return data.memberId === memberId || d.id === memberId;
+      });
+      if (storeTarget) {
+        await setDoc(doc(membersColl, memberId), {
+          ...storeTarget.data(),
+          ...updates,
+          registeredStore: businessName,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+    } catch {}
   }
+
+  dbBroadcastEvent(businessName, {
+    type: 'membership',
+    title: '✏️ Member Updated',
+    message: `Updated profile for member ${updates.name || memberId} across all store terminals.`,
+    timestamp: getBruneiFormattedTime(new Date(), true),
+    memberId,
+  }).catch((e) => console.warn('Broadcast notice:', e));
 }
 
 export async function dbStartShift(businessName: string, shift: StaffShift) {
@@ -2363,9 +2488,13 @@ export async function fetchCloudStore(businessName?: string): Promise<GymDataSto
 
     const bizData = bizSnap.data();
 
-    // Fetch members subcollection
-    const membersSnap = await getDocs(getBusinessCollectionRef(biz, 'members'));
-    const members: Member[] = membersSnap.docs.map((d) => d.data() as Member);
+    // Fetch universal shared members directory
+    const membersSnap = await getDocs(getMembersCollectionRef());
+    let members: Member[] = membersSnap.docs.map((d) => d.data() as Member);
+    if (members.length === 0) {
+      const storeMembersSnap = await getDocs(getBusinessCollectionRef(biz, 'members'));
+      members = storeMembersSnap.docs.map((d) => d.data() as Member);
+    }
 
     // Fetch attendance subcollection
     const attSnap = await getDocs(getBusinessCollectionRef(biz, 'attendance'));
