@@ -9,6 +9,10 @@ service cloud.firestore {
       }
     }
 
+    match /members/{memberId} {
+      allow read, write: if true;
+    }
+
     match /gym/{document=**} {
       allow read, write: if true;
     }
