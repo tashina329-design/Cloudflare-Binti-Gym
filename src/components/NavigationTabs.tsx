@@ -71,7 +71,7 @@ export const NavigationTabs: React.FC<NavigationTabsProps> = ({
     { id: 'membership', label: 'Register Member', shortLabel: 'Members', category: 'Members', icon: <CreditCard className="w-4 h-4" /> },
     { id: 'expense', label: 'Expense Outflow', shortLabel: 'Expenses', category: 'Members', icon: <DollarSign className="w-4 h-4" /> },
     { id: 'sheets', label: 'Google Sheets Sync', shortLabel: 'Sheets', category: 'Tools', icon: <FileSpreadsheet className="w-4 h-4" />, badge: 'Sync' },
-    { id: 'attendance', label: 'Attendance Tracking', shortLabel: 'Attendance', category: 'Tools', icon: <CalendarCheck2 className="w-4 h-4" />, badge: 'History' },
+    { id: 'attendance', label: 'Attendance Tracking', shortLabel: 'Attendance', category: 'Tools', icon: <CalendarCheck2 className="w-4 h-4" /> },
   ];
 
   const handleSelectTab = (tabId: TabId) => {
