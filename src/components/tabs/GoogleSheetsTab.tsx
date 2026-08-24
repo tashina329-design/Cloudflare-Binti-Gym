@@ -685,18 +685,27 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
         </div>
       )}
 
-      {/* Main Connection Status Card when neither user nor spreadsheet is connected */}
-      {!user && !spreadsheet ? (
-        <div className="p-6 md:p-8 bg-slate-900 border border-slate-800 rounded-2xl text-center space-y-6 max-w-2xl mx-auto my-4">
-          <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto">
-            <ShieldCheck className="w-6 h-6" />
-          </div>
-          
-          <div className="space-y-2">
-            <h3 className="text-base font-bold text-white">Connect Google Sheet for {effectiveStore}</h3>
-            <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-              Connect your Google account or link any Google Spreadsheet to enable live syncing and historical log importing across desktop and mobile.
-            </p>
+      {/* Main Connection Status Card when spreadsheet is not connected */}
+      {!spreadsheet && (
+        <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Connect Google Sheet for {effectiveStore}</h3>
+                <p className="text-xs text-slate-400">
+                  Connect your Google account or paste a direct sheet link to sync live gym transactions.
+                </p>
+              </div>
+            </div>
+            {isMobile && (
+              <span className="text-[10px] px-2.5 py-1 rounded-full bg-sky-500/20 text-sky-300 font-semibold border border-sky-500/30 flex items-center gap-1 shrink-0">
+                <Smartphone className="w-3 h-3 text-sky-400" />
+                {isApple ? 'iPad/iOS Mode' : 'Mobile Mode'}
+              </span>
+            )}
           </div>
 
           {/* Connection Method Cards */}
@@ -714,6 +723,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
               <div className="space-y-2 pt-2">
                 <button
+                  type="button"
                   onClick={handleSignIn}
                   disabled={isSigningIn}
                   className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs transition shadow flex items-center justify-center gap-2 cursor-pointer"
@@ -723,12 +733,13 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
                 </button>
 
                 <button
+                  type="button"
                   onClick={handleMobileRedirectSignIn}
                   disabled={isSigningIn}
                   className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-sky-300 border border-sky-500/30 font-semibold rounded-lg text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer"
                 >
                   <Smartphone className="w-3.5 h-3.5 text-sky-400" />
-                  Mobile Redirect Mode (iOS/Android)
+                  Mobile Redirect Mode (iOS/Android/iPad)
                 </button>
               </div>
             </div>
@@ -740,7 +751,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
                   <Link2 className="w-4 h-4 text-sky-400" /> Option 2: Direct Sheet Link / ID
                 </span>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Paste your Google Spreadsheet link. Works 100% on iOS, Android, and tablets without login.
+                  Paste your Google Spreadsheet link. Works 100% on iOS, iPad, Android, and tablets without login.
                 </p>
               </div>
 
@@ -780,93 +791,53 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
                 <p className="font-semibold text-slate-200">📱 Mobile & Tablet Connection Guide:</p>
                 <ol className="list-decimal list-inside space-y-1 text-slate-400 text-[11px] leading-relaxed">
                   <li><strong>Fastest Method:</strong> In Google Sheets, tap <em>Share & export &gt; Manage access &gt; Anyone with the link can view</em>, copy the link, and paste it in <strong>Option 2: Direct Sheet Link</strong> above.</li>
-                  <li><strong>Google Sign-In:</strong> If Safari or Chrome blocks popups, tap <strong>Mobile Redirect Mode</strong> above to open the full-screen Google authorization page.</li>
+                  <li><strong>Google Sign-In:</strong> If Safari or Chrome blocks popups on iPad/iPhone, tap <strong>Mobile Redirect Mode</strong> above to open the full-screen Google authorization page.</li>
                   <li><strong>Multi-Device:</strong> Once connected, your store's spreadsheet is stored in the database and automatically accessible by staff across all phones and tablets!</li>
                 </ol>
               </div>
             )}
           </div>
-
-          {/* Direct Manual Token Dropdown */}
-          <div className="pt-2 text-center">
-            <button
-              type="button"
-              onClick={() => setShowManualToken(!showManualToken)}
-              className="text-[11px] text-slate-500 hover:text-slate-300 underline transition cursor-pointer"
-            >
-              {showManualToken ? 'Hide developer token option' : 'Or connect using OAuth Developer Access Token'}
-            </button>
-
-            {showManualToken && (
-              <form onSubmit={handleManualTokenSubmit} className="mt-3 p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-left animate-in fade-in">
-                <p className="text-[11px] text-slate-300">
-                  Paste a Google OAuth Access Token with Spreadsheet permissions:
-                </p>
-                <div className="space-y-2">
-                  <input
-                    type="text"
-                    placeholder="Paste Google Access Token (ya29...)"
-                    value={manualTokenInput}
-                    onChange={(e) => setManualTokenInput(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-mono"
-                  />
-                  <input
-                    type="email"
-                    placeholder="Your Google Email (optional)"
-                    value={manualEmailInput}
-                    onChange={(e) => setManualEmailInput(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                  <button
-                    type="submit"
-                    disabled={isSubmittingManualToken || !manualTokenInput.trim()}
-                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    {isSubmittingManualToken ? 'Connecting...' : 'Connect with Token'}
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column: Target info & Quick stats & Two-way import center */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Spreadsheet Target Info */}
-            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-400" /> Active Spreadsheet for {effectiveStore}
-                  </h3>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-emerald-400 border border-emerald-500/30">
-                    Store-Specific
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setShowConfigOptions(!showConfigOptions)}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <Settings2 className="w-3.5 h-3.5 text-slate-400" />
-                    {showConfigOptions ? 'Hide Sheet Settings' : 'Sheet Settings / Link Custom'}
-                  </button>
-                  {spreadsheet && (
-                    <a
-                      href={spreadsheet.spreadsheetUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-400 hover:text-emerald-300 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-colors"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" /> Open in Google Sheets
-                    </a>
-                  )}
-                </div>
-              </div>
+      )}
 
-              {/* Collapsible Store Spreadsheet Settings / Custom Link */}
+      {/* Main Database Sync Grid & Table Views */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left Column: Target info & Quick stats & Two-way import center */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Spreadsheet Target Info */}
+          <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-400" /> Active Spreadsheet for {effectiveStore}
+                </h3>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-emerald-400 border border-emerald-500/30">
+                  Store-Specific
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowConfigOptions(!showConfigOptions)}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Settings2 className="w-3.5 h-3.5 text-slate-400" />
+                  {showConfigOptions ? 'Hide Sheet Settings' : 'Sheet Settings / Link Custom'}
+                </button>
+                {spreadsheet && (
+                  <a
+                    href={spreadsheet.spreadsheetUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-emerald-400 hover:text-emerald-300 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Open in Google Sheets
+                  </a>
+                )}
+              </div>
+            </div>
+
+            {/* Collapsible Store Spreadsheet Settings / Custom Link */}
               {showConfigOptions && (
                 <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-4 text-xs animate-in fade-in">
                   <div className="flex items-center justify-between border-b border-slate-800 pb-2">
@@ -1506,7 +1477,6 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
             </p>
           </div>
         </div>
-      )}
 
       {/* Confirmation Modal prior to data mutation */}
       {showConfirmModal && (
