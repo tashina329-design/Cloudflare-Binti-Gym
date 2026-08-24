@@ -1,5 +1,7 @@
 import {
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut as firebaseSignOut,
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -33,14 +35,42 @@ const SCOPES = [
 const firebaseProvider = new GoogleAuthProvider();
 firebaseProvider.addScope('https://www.googleapis.com/auth/spreadsheets');
 firebaseProvider.addScope('https://www.googleapis.com/auth/drive.file');
+firebaseProvider.setCustomParameters({
+  prompt: 'select_account',
+});
+
+const STORAGE_KEY_TOKEN = 'gym_google_workspace_token';
+const STORAGE_KEY_USER = 'gym_google_workspace_user';
 
 let isSigningIn = false;
-let cachedAccessToken: string | null = null;
+let cachedAccessToken: string | null = (typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_TOKEN) : null);
 let cachedUser: AuthUser | null = null;
+
+try {
+  if (typeof localStorage !== 'undefined') {
+    const savedUserStr = localStorage.getItem(STORAGE_KEY_USER);
+    if (savedUserStr) {
+      cachedUser = JSON.parse(savedUserStr);
+    }
+  }
+} catch (e) {
+  // ignore storage parse error
+}
+
 const authListeners: Array<{
   onSuccess?: (user: AuthUser, token: string) => void;
   onFailure?: () => void;
 }> = [];
+
+export function isMobileDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
+}
+
+export function isIOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+}
 
 // Helper to ensure GIS script is loaded
 let gisLoadedPromise: Promise<void> | null = null;
@@ -75,7 +105,7 @@ function ensureGisLoaded(): Promise<void> {
 }
 
 // Fetch Google User Profile using OAuth access token
-async function fetchGoogleUserProfile(accessToken: string): Promise<GoogleAuthUser> {
+export async function fetchGoogleUserProfile(accessToken: string): Promise<GoogleAuthUser> {
   try {
     const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -102,7 +132,7 @@ async function fetchGoogleUserProfile(accessToken: string): Promise<GoogleAuthUs
 }
 
 // Request Token using Google Identity Services (GIS) Token Client
-function requestGisToken(clientId: string): Promise<{ user: GoogleAuthUser; accessToken: string }> {
+export function requestGisToken(clientId: string): Promise<{ user: GoogleAuthUser; accessToken: string }> {
   return new Promise(async (resolve, reject) => {
     try {
       await ensureGisLoaded();
@@ -139,7 +169,7 @@ function requestGisToken(clientId: string): Promise<{ user: GoogleAuthUser; acce
           if (completed) return;
           completed = true;
           console.error('GIS Error Callback:', err);
-          reject(new Error(err.message || 'Google Sign-In popup was closed or blocked.'));
+          reject(new Error(err.message || 'Google Sign-In popup was closed or blocked. On mobile, try disabling popup blockers in Safari/Chrome settings.'));
         },
       });
 
@@ -153,6 +183,13 @@ function requestGisToken(clientId: string): Promise<{ user: GoogleAuthUser; acce
 function notifyAuthSuccess(user: AuthUser, token: string) {
   cachedUser = user;
   cachedAccessToken = token;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY_TOKEN, token);
+      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
+    }
+  } catch (e) {}
+
   for (const listener of authListeners) {
     listener.onSuccess?.(user, token);
   }
@@ -161,6 +198,13 @@ function notifyAuthSuccess(user: AuthUser, token: string) {
 function notifyAuthFailure() {
   cachedUser = null;
   cachedAccessToken = null;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(STORAGE_KEY_TOKEN);
+      localStorage.removeItem(STORAGE_KEY_USER);
+    }
+  } catch (e) {}
+
   for (const listener of authListeners) {
     listener.onFailure?.();
   }
@@ -173,10 +217,31 @@ export const initAuth = (
   const listener = { onSuccess: onAuthSuccess, onFailure: onAuthFailure };
   authListeners.push(listener);
 
-  // If already authenticated in this session, trigger immediately
+  // If already authenticated in this session or localStorage, trigger immediately
   if (cachedUser && cachedAccessToken) {
     onAuthSuccess?.(cachedUser, cachedAccessToken);
   }
+
+  // Check redirect result for mobile devices (iOS / Android)
+  getRedirectResult(auth)
+    .then(async (result) => {
+      if (result) {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        const token = credential?.accessToken;
+        if (token) {
+          notifyAuthSuccess(result.user, token);
+        } else if (result.user) {
+          // If token wasn't in credential, try fetching with cached or GIS
+          const savedToken = localStorage.getItem(STORAGE_KEY_TOKEN);
+          if (savedToken) {
+            notifyAuthSuccess(result.user, savedToken);
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      console.warn('Firebase getRedirectResult error:', err);
+    });
 
   const unsubscribeFirebase = onAuthStateChanged(auth, async (fbUser: FirebaseUser | null) => {
     if (fbUser) {
@@ -204,6 +269,24 @@ export const setManualAccessToken = async (token: string, email = 'user@google.c
   return { user, accessToken: token };
 };
 
+/**
+ * Mobile-friendly Google Sign-In with Redirect mode for iOS & Android
+ */
+export const googleSignInRedirect = async (): Promise<void> => {
+  isSigningIn = true;
+  try {
+    await signInWithRedirect(auth, firebaseProvider);
+  } catch (err: any) {
+    console.error('Firebase signInWithRedirect failed:', err);
+    throw err;
+  } finally {
+    isSigningIn = false;
+  }
+};
+
+/**
+ * Standard Google Sign-In with robust fallbacks for Desktop and Mobile
+ */
 export const googleSignIn = async (): Promise<{ user: AuthUser; accessToken: string } | null> => {
   if (isSigningIn) {
     isSigningIn = false; // Reset if stuck
@@ -211,7 +294,7 @@ export const googleSignIn = async (): Promise<{ user: AuthUser; accessToken: str
   isSigningIn = true;
 
   try {
-    // Primary approach: Firebase signInWithPopup
+    // 1. First attempt: Firebase signInWithPopup
     try {
       const result = await signInWithPopup(auth, firebaseProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
@@ -229,36 +312,39 @@ export const googleSignIn = async (): Promise<{ user: AuthUser; accessToken: str
 
       console.warn('Firebase signInWithPopup returned:', errorCode, errorMsg);
 
-      // If Firebase blocked by unauthorized domain, try GIS client if available
+      // On mobile (iOS / Android) or unauthorized domain, try GIS token client immediately
       if (
+        errorCode === 'auth/popup-blocked' ||
+        errorCode === 'auth/popup-closed-by-user' ||
+        errorCode === 'auth/cancelled-popup-request' ||
         errorCode === 'auth/unauthorized-domain' ||
         errorMsg.toLowerCase().includes('unauthorized domain') ||
-        errorMsg.toLowerCase().includes('requested action is invalid')
+        errorMsg.toLowerCase().includes('requested action is invalid') ||
+        isMobileDevice()
       ) {
         if (OAUTH_CLIENT_ID) {
           try {
+            console.log('Attempting GIS Token Client fallback...');
             const gisResult = await requestGisToken(OAUTH_CLIENT_ID);
             notifyAuthSuccess(gisResult.user, gisResult.accessToken);
             return gisResult;
           } catch (gisErr: any) {
-            console.warn('GIS Token client fallback also failed:', gisErr);
+            console.warn('GIS Token client fallback failed:', gisErr);
           }
         }
 
-        const customErr = new Error(
-          `Domain "${currentHostname}" is not authorized in Firebase Authentication. Please add "${currentHostname}" to Firebase Console -> Authentication -> Settings -> Authorized domains.`
-        );
-        (customErr as any).code = 'auth/unauthorized-domain';
-        (customErr as any).hostname = currentHostname;
-        throw customErr;
-      }
+        if (errorCode === 'auth/popup-blocked') {
+          throw new Error('Popup was blocked by your browser. On iPhone/iPad, go to Settings -> Safari -> turn off "Block Pop-ups", or use the Direct Sheet Link / Redirect option.');
+        }
 
-      if (errorCode === 'auth/popup-blocked') {
-        throw new Error('The Google login popup was blocked by your browser. Please allow popups for this site and try again.');
-      }
-
-      if (errorCode === 'auth/popup-closed-by-user') {
-        throw new Error('Sign-in popup was closed before completing authentication. Please try again.');
+        if (errorCode === 'auth/unauthorized-domain') {
+          const customErr = new Error(
+            `Domain "${currentHostname}" is not in Firebase authorized domains. You can connect your Google Sheet directly using the "Paste Sheet Link / ID" method below without requiring Google login.`
+          );
+          (customErr as any).code = 'auth/unauthorized-domain';
+          (customErr as any).hostname = currentHostname;
+          throw customErr;
+        }
       }
 
       // Try GIS if Firebase had other errors
@@ -280,7 +366,11 @@ export const googleSignIn = async (): Promise<{ user: AuthUser; accessToken: str
 };
 
 export const getAccessToken = (): string | null => {
-  return cachedAccessToken;
+  if (cachedAccessToken) return cachedAccessToken;
+  if (typeof localStorage !== 'undefined') {
+    return localStorage.getItem(STORAGE_KEY_TOKEN);
+  }
+  return null;
 };
 
 export const getCurrentAuthUser = (): AuthUser | null => {
@@ -306,4 +396,5 @@ export const googleSignOut = async (): Promise<void> => {
 
   notifyAuthFailure();
 };
+
 
