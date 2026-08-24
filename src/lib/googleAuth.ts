@@ -355,82 +355,68 @@ export const googleSignInRedirect = async (): Promise<void> => {
 };
 
 /**
- * Standard Google Sign-In with robust fallbacks for Desktop, iPad, iOS and Android
+ * Standard Google Sign-In with robust support for Desktop, iPad, iOS, and Android
  */
 export const googleSignIn = async (): Promise<{ user: AuthUser; accessToken: string } | null> => {
-  if (isSigningIn) {
-    isSigningIn = false; // Reset if stuck
-  }
   isSigningIn = true;
 
   try {
-    // 1. On iPad / iOS / Safari or when GIS client is available, use direct GIS token client first
-    // This completely prevents Safari ITP cross-origin cookie / popup-closed-by-user crashes
-    const google = typeof window !== 'undefined' ? (window as any).google : null;
-    const isAppleOrMobile = isIOS() || isMobileDevice();
+    // 1. Primary standard sign-in via Firebase Auth popup
+    const result = await signInWithPopup(auth, firebaseProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const token = credential?.accessToken || (result as any)._tokenResponse?.oauthAccessToken || '';
 
-    if (isAppleOrMobile || google?.accounts?.oauth2) {
+    if (token) {
+      notifyAuthSuccess(result.user, token);
+      return { user: result.user, accessToken: token };
+    }
+
+    // If token wasn't in credential, check existing cached token or user
+    const fallbackToken = cachedAccessToken || (typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_TOKEN) : '') || '';
+    notifyAuthSuccess(result.user, fallbackToken);
+    return { user: result.user, accessToken: fallbackToken };
+  } catch (fbErr: any) {
+    const errorCode = fbErr?.code || '';
+    const errorMsg = fbErr?.message || '';
+    console.warn('Firebase signInWithPopup returned:', errorCode, errorMsg);
+
+    // If popup was blocked by Safari / Chrome
+    if (errorCode === 'auth/popup-blocked') {
+      throw new Error(
+        'Sign-In popup was blocked by your browser. Please allow pop-ups for this site, or tap "Mobile Redirect Mode" / "Direct Sheet Link" below.'
+      );
+    }
+
+    // If user cancelled / closed popup
+    if (errorCode === 'auth/popup-closed-by-user' || errorCode === 'auth/cancelled-popup-request') {
+      throw new Error('Google Sign-In popup was closed before completing. Please tap "Connect with Google" to try again.');
+    }
+
+    // If domain unauthorized in Firebase
+    if (errorCode === 'auth/unauthorized-domain') {
+      const currentHostname = typeof window !== 'undefined' ? window.location.hostname : '';
+      const customErr = new Error(
+        `Domain "${currentHostname}" is not in Firebase authorized domains. You can connect your Google Sheet directly using Option 2: Direct Sheet Link without requiring Google login.`
+      );
+      (customErr as any).code = 'auth/unauthorized-domain';
+      throw customErr;
+    }
+
+    // Optional GIS fallback if available and applicable
+    if (OAUTH_CLIENT_ID) {
       try {
-        console.log('Initiating direct GIS Google authorization...');
+        console.log('Attempting secondary GIS fallback...');
         const gisResult = await requestGisTokenDirect();
         if (gisResult?.accessToken) {
           notifyAuthSuccess(gisResult.user, gisResult.accessToken);
           return gisResult;
         }
-      } catch (gisErr: any) {
-        console.warn('Direct GIS sign-in notice:', gisErr);
-        // If user cancelled, rethrow
-        if (gisErr?.message?.includes('closed') || gisErr?.message?.includes('blocked')) {
-          // If on mobile/iPad, inform clearly
-          if (isAppleOrMobile) {
-            throw new Error(gisErr.message || 'Google authorization window was closed. On iPad/iPhone, you can also use Option 2: Direct Sheet Link to sync without login.');
-          }
-        }
+      } catch (gisErr) {
+        console.warn('GIS fallback also failed:', gisErr);
       }
     }
 
-    // 2. Secondary attempt: Firebase signInWithPopup (for desktop Chrome/Firefox/Edge)
-    try {
-      const result = await signInWithPopup(auth, firebaseProvider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (!credential?.accessToken) {
-        throw new Error('Google signed in, but access token for Sheets/Drive was not returned. Please ensure spreadsheet permissions are granted.');
-      }
-
-      const token = credential.accessToken;
-      notifyAuthSuccess(result.user, token);
-      return { user: result.user, accessToken: token };
-    } catch (fbErr: any) {
-      const currentHostname = typeof window !== 'undefined' ? window.location.hostname : 'your domain';
-      const errorCode = fbErr?.code || '';
-      const errorMsg = fbErr?.message || '';
-
-      console.warn('Firebase signInWithPopup returned:', errorCode, errorMsg);
-
-      // Try GIS if Firebase popup failed
-      try {
-        const gisResult = await requestGisTokenDirect();
-        notifyAuthSuccess(gisResult.user, gisResult.accessToken);
-        return gisResult;
-      } catch (gisFallbackErr: any) {
-        console.warn('GIS final fallback error:', gisFallbackErr);
-      }
-
-      if (errorCode === 'auth/popup-blocked') {
-        throw new Error('Popup was blocked by your browser. On iPhone/iPad, go to Settings -> Safari -> turn off "Block Pop-ups", or use Option 2: Direct Sheet Link below.');
-      }
-
-      if (errorCode === 'auth/unauthorized-domain') {
-        const customErr = new Error(
-          `Domain "${currentHostname}" is not in Firebase authorized domains. You can connect your Google Sheet directly using Option 2: Direct Sheet Link without requiring Google login.`
-        );
-        (customErr as any).code = 'auth/unauthorized-domain';
-        (customErr as any).hostname = currentHostname;
-        throw customErr;
-      }
-
-      throw fbErr;
-    }
+    throw fbErr;
   } finally {
     isSigningIn = false;
   }
