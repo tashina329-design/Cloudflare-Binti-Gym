@@ -139,6 +139,10 @@
     }
   },
   "firestore": {
+    "/members/{memberId}": {
+      "schema": { "$ref": "#/entities/Member" },
+      "description": "Universal shared gym member records accessible across all store terminals"
+    },
     "/businesses/{businessId}": {
       "schema": { "$ref": "#/entities/Business" },
       "description": "Gym business organization configuration and active shift state"
