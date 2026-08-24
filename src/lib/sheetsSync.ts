@@ -537,21 +537,50 @@ export function extractSpreadsheetIdFromInput(input: string): string {
   return trimmed;
 }
 
-export async function verifyAndGetSpreadsheetInfo(accessToken: string, spreadsheetId: string): Promise<SpreadsheetInfo> {
+export async function verifyAndGetSpreadsheetInfo(accessToken: string | null | undefined, spreadsheetId: string): Promise<SpreadsheetInfo> {
   const cleanId = extractSpreadsheetIdFromInput(spreadsheetId);
-  const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}?fields=properties(title)`;
-  const metaRes = await fetch(metaUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!metaRes.ok) {
-    const err = await metaRes.json().catch(() => ({}));
-    throw new Error(err.error?.message || 'Invalid or inaccessible Google Spreadsheet ID / URL');
+  if (!cleanId) {
+    throw new Error('Spreadsheet ID or URL cannot be empty');
   }
-  const metaData = await metaRes.json();
+
+  if (accessToken) {
+    try {
+      const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}?fields=properties(title)`;
+      const metaRes = await fetch(metaUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (metaRes.ok) {
+        const metaData = await metaRes.json();
+        return {
+          spreadsheetId: cleanId,
+          spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanId}`,
+          title: metaData.properties?.title || 'Connected Gym Spreadsheet',
+        };
+      }
+    } catch (e) {
+      console.warn('OAuth verify failed, attempting public check:', e);
+    }
+  }
+
+  // Public / Shared Google Sheet check via gviz endpoint (iOS/Android & Desktop without OAuth)
+  try {
+    const testUrl = `https://docs.google.com/spreadsheets/d/${cleanId}/gviz/tq?tqx=out:csv&tq=select%20*&headers=1`;
+    const res = await fetch(testUrl);
+    if (res.ok) {
+      return {
+        spreadsheetId: cleanId,
+        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanId}`,
+        title: 'Google Spreadsheet (Direct Link)',
+      };
+    }
+  } catch (e) {
+    console.warn('Public sheet probe notice:', e);
+  }
+
   return {
     spreadsheetId: cleanId,
     spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanId}`,
-    title: metaData.properties?.title || 'Connected Gym Spreadsheet',
+    title: 'Google Spreadsheet (Direct Link)',
   };
 }
 
@@ -1477,6 +1506,88 @@ export function parseFlexibleDateTimeToIso(rawDate: any, fallbackTime?: string):
 }
 
 /**
+ * Robust RFC 4180 CSV parser for public Google Sheets export endpoints.
+ */
+export function parseCsvRows(csvText: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = '';
+  let insideQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+
+    if (char === '"') {
+      if (insideQuotes && nextChar === '"') {
+        currentCell += '"';
+        i++; // skip escaped quote
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === ',' && !insideQuotes) {
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+    } else if ((char === '\r' || char === '\n') && !insideQuotes) {
+      if (char === '\r' && nextChar === '\n') {
+        i++;
+      }
+      currentRow.push(currentCell.trim());
+      if (currentRow.some((cell) => cell.length > 0)) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentCell = '';
+    } else {
+      currentCell += char;
+    }
+  }
+
+  if (currentCell || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some((cell) => cell.length > 0)) {
+      rows.push(currentRow);
+    }
+  }
+
+  return rows;
+}
+
+/**
+ * Fetches sheet data as CSV from Google Sheets public / shared link using Google Visualization API (GViz).
+ * Works on iOS / Android and Desktop without requiring Google OAuth login when sheet has link sharing enabled.
+ */
+export async function fetchPublicSheetCsv(
+  spreadsheetId: string,
+  sheetName: string
+): Promise<string[][]> {
+  const cleanId = extractSpreadsheetIdFromInput(spreadsheetId);
+  const candidateUrls = [
+    `https://docs.google.com/spreadsheets/d/${cleanId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`,
+    `https://docs.google.com/spreadsheets/d/${cleanId}/export?format=csv&sheet=${encodeURIComponent(sheetName)}`,
+  ];
+
+  for (const url of candidateUrls) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const text = await res.text();
+        if (text && !text.includes('<!DOCTYPE html>')) {
+          const parsed = parseCsvRows(text);
+          if (parsed.length > 0) {
+            return parsed;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`Public CSV fetch error for sheet ${sheetName}:`, e);
+    }
+  }
+
+  return [];
+}
+
+/**
  * Parses numeric currency strings like "$50.00", "50", "B$12.50" into standard float numbers.
  */
 export function parseCleanCurrencyAmount(val: any): number {
@@ -1489,33 +1600,54 @@ export function parseCleanCurrencyAmount(val: any): number {
 
 /**
  * Fetches all members listed in the Google Sheets 'Members Directory' (or 'Members List') tab.
+ * Supports both OAuth accessToken and direct Public/Shared Sheet link (iOS / Android fallback).
  */
 export async function fetchMembersFromGoogleSheets(
-  accessToken: string,
+  accessToken: string | null | undefined,
   spreadsheetId: string
 ): Promise<Member[]> {
-  // Check which tab exists: 'Members Directory' or fallback to 'Members List'
-  let range = "'Members Directory'!A2:G50000";
-  let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+  let rows: any[][] = [];
 
-  let res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  // 1. Try authenticated API if accessToken is provided
+  if (accessToken) {
+    let range = "'Members Directory'!A2:G50000";
+    let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
 
-  if (!res.ok) {
-    range = "'Members List'!A2:G50000";
-    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
-    res = await fetch(url, {
+    let res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    }).catch(() => null);
+
+    if (!res || !res.ok) {
+      range = "'Members List'!A2:G50000";
+      url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }).catch(() => null);
+    }
+
+    if (res && res.ok) {
+      const json = await res.json().catch(() => ({}));
+      rows = json.values || [];
+    }
   }
 
-  if (!res.ok) {
+  // 2. Fallback to public CSV fetch if no token or API returned 0 rows
+  if (rows.length === 0) {
+    const publicRows = await fetchPublicSheetCsv(spreadsheetId, 'Members Directory');
+    if (publicRows.length > 0) {
+      rows = publicRows;
+    } else {
+      const fallbackPublic = await fetchPublicSheetCsv(spreadsheetId, 'Members List');
+      if (fallbackPublic.length > 0) {
+        rows = fallbackPublic;
+      }
+    }
+  }
+
+  if (rows.length === 0) {
     return [];
   }
 
-  const json = await res.json();
-  const rows: any[][] = json.values || [];
   const members: Member[] = [];
 
   for (const row of rows) {
@@ -1571,30 +1703,49 @@ export async function fetchMembersFromGoogleSheets(
  * Fetches all sales entries listed in the Google Sheets 'Sales Log' (or 'Sales') tab.
  */
 export async function fetchSalesFromGoogleSheets(
-  accessToken: string,
+  accessToken: string | null | undefined,
   spreadsheetId: string
 ): Promise<any[]> {
-  let range = "'Sales Log'!A2:G50000";
-  let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+  let rows: any[][] = [];
 
-  let res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  if (accessToken) {
+    let range = "'Sales Log'!A2:G50000";
+    let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
 
-  if (!res.ok) {
-    range = "'Sales'!A2:G50000";
-    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
-    res = await fetch(url, {
+    let res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    }).catch(() => null);
+
+    if (!res || !res.ok) {
+      range = "'Sales'!A2:G50000";
+      url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }).catch(() => null);
+    }
+
+    if (res && res.ok) {
+      const json = await res.json().catch(() => ({}));
+      rows = json.values || [];
+    }
   }
 
-  if (!res.ok) {
+  if (rows.length === 0) {
+    const publicRows = await fetchPublicSheetCsv(spreadsheetId, 'Sales Log');
+    if (publicRows.length > 0) {
+      rows = publicRows;
+    } else {
+      const fallbackPublic = await fetchPublicSheetCsv(spreadsheetId, 'Sales');
+      if (fallbackPublic.length > 0) {
+        rows = fallbackPublic;
+      }
+    }
+  }
+
+  if (rows.length === 0) {
     return [];
   }
 
-  const json = await res.json();
-  const rows: any[][] = json.values || [];
   const sales: any[] = [];
 
   for (const row of rows) {
@@ -1604,14 +1755,6 @@ export async function fetchSalesFromGoogleSheets(
     const firstCell = String(row[0] || '').trim().toLowerCase();
     if (firstCell.includes('date') || firstCell.includes('time')) continue;
 
-    // Columns:
-    // A (0): Date & Time (e.g. 2026-08-20 09:30 AM)
-    // B (1): Staff on Duty
-    // C (2): Category (POS, Membership, Walk-In, Personal Training, Classes, etc.)
-    // D (3): Customer / Guest
-    // E (4): Phone Number
-    // F (5): Payment Method (Cash, Baiduri Card, BIBD QuickPay, Coupon)
-    // G (6): Amount ($)
     const rawDateTime = row[0];
     const staff = String(row[1] || 'Duty Staff').trim();
     const category = String(row[2] || 'POS').trim();
@@ -1648,30 +1791,49 @@ export async function fetchSalesFromGoogleSheets(
  * Fetches all expenses entries listed in the Google Sheets 'Expenses Log' (or 'Expenses') tab.
  */
 export async function fetchExpensesFromGoogleSheets(
-  accessToken: string,
+  accessToken: string | null | undefined,
   spreadsheetId: string
 ): Promise<any[]> {
-  let range = "'Expenses Log'!A2:F50000";
-  let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+  let rows: any[][] = [];
 
-  let res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  if (accessToken) {
+    let range = "'Expenses Log'!A2:F50000";
+    let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
 
-  if (!res.ok) {
-    range = "'Expenses'!A2:F50000";
-    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
-    res = await fetch(url, {
+    let res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    }).catch(() => null);
+
+    if (!res || !res.ok) {
+      range = "'Expenses'!A2:F50000";
+      url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }).catch(() => null);
+    }
+
+    if (res && res.ok) {
+      const json = await res.json().catch(() => ({}));
+      rows = json.values || [];
+    }
   }
 
-  if (!res.ok) {
+  if (rows.length === 0) {
+    const publicRows = await fetchPublicSheetCsv(spreadsheetId, 'Expenses Log');
+    if (publicRows.length > 0) {
+      rows = publicRows;
+    } else {
+      const fallbackPublic = await fetchPublicSheetCsv(spreadsheetId, 'Expenses');
+      if (fallbackPublic.length > 0) {
+        rows = fallbackPublic;
+      }
+    }
+  }
+
+  if (rows.length === 0) {
     return [];
   }
 
-  const json = await res.json();
-  const rows: any[][] = json.values || [];
   const expenses: any[] = [];
 
   for (const row of rows) {
@@ -1681,13 +1843,6 @@ export async function fetchExpensesFromGoogleSheets(
     const firstCell = String(row[0] || '').trim().toLowerCase();
     if (firstCell.includes('date') || firstCell.includes('time')) continue;
 
-    // Columns:
-    // A (0): Date & Time
-    // B (1): Staff on Duty
-    // C (2): Category (Utilities, Maintenance, Supplies, etc.)
-    // D (3): Description
-    // E (4): Payment Method
-    // F (5): Amount ($)
     const rawDateTime = row[0];
     const staff = String(row[1] || 'Duty Staff').trim();
     const category = String(row[2] || 'General').trim();
@@ -1722,38 +1877,62 @@ export async function fetchExpensesFromGoogleSheets(
  * Fetches all check-in / attendance records listed in the Google Sheets 'Check-In Log' (or 'Attendance') tab.
  */
 export async function fetchAttendanceFromGoogleSheets(
-  accessToken: string,
+  accessToken: string | null | undefined,
   spreadsheetId: string
 ): Promise<any[]> {
-  let range = "'Check-In Log'!A2:E50000";
-  let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+  let rows: any[][] = [];
 
-  let res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  if (accessToken) {
+    let range = "'Check-In Log'!A2:E50000";
+    let url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
 
-  if (!res.ok) {
-    range = "'Attendance'!A2:E50000";
-    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
-    res = await fetch(url, {
+    let res = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    }).catch(() => null);
+
+    if (!res || !res.ok) {
+      range = "'Attendance'!A2:E50000";
+      url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }).catch(() => null);
+    }
+
+    if (!res || !res.ok) {
+      range = "'Check-Ins'!A2:E50000";
+      url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }).catch(() => null);
+    }
+
+    if (res && res.ok) {
+      const json = await res.json().catch(() => ({}));
+      rows = json.values || [];
+    }
   }
 
-  if (!res.ok) {
-    range = "'Check-Ins'!A2:E50000";
-    url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
-    res = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+  if (rows.length === 0) {
+    const publicRows = await fetchPublicSheetCsv(spreadsheetId, 'Check-In Log');
+    if (publicRows.length > 0) {
+      rows = publicRows;
+    } else {
+      const fallbackPublic = await fetchPublicSheetCsv(spreadsheetId, 'Attendance');
+      if (fallbackPublic.length > 0) {
+        rows = fallbackPublic;
+      } else {
+        const checkinsPublic = await fetchPublicSheetCsv(spreadsheetId, 'Check-Ins');
+        if (checkinsPublic.length > 0) {
+          rows = checkinsPublic;
+        }
+      }
+    }
   }
 
-  if (!res.ok) {
+  if (rows.length === 0) {
     return [];
   }
 
-  const json = await res.json();
-  const rows: any[][] = json.values || [];
   const attendance: any[] = [];
 
   for (const row of rows) {
@@ -1763,12 +1942,6 @@ export async function fetchAttendanceFromGoogleSheets(
     const firstCell = String(row[0] || '').trim().toLowerCase();
     if (firstCell.includes('check-in') || firstCell.includes('date') || firstCell.includes('time')) continue;
 
-    // Columns:
-    // A (0): Check-In Date & Time
-    // B (1): Member / Guest Name
-    // C (2): Phone Number
-    // D (3): Plan / Activity
-    // E (4): Check-In Status
     const rawDateTime = row[0];
     const name = String(row[1] || 'Guest').trim();
     const phone = String(row[2] || '').trim();
@@ -1801,7 +1974,7 @@ export async function fetchAttendanceFromGoogleSheets(
  * Fetches all datasets from Google Sheets simultaneously for complete two-way synchronization.
  */
 export async function fetchAllLogsFromGoogleSheets(
-  accessToken: string,
+  accessToken: string | null | undefined,
   spreadsheetId: string
 ): Promise<{
   members: Member[];
