@@ -18,6 +18,7 @@ export interface AttendanceRecord {
   phone: string;
   plan: string;
   status: string;
+  storeName?: string;
 }
 
 export interface SalesRecord {
