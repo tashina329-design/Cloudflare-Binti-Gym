@@ -13,7 +13,7 @@ import {
   orderBy,
 } from 'firebase/firestore';
 import { db, ensureFirebaseAuth } from './firebase';
-import { DashboardData, Member, StaffShift, RegisteredStaff, CheckInResponse, PTDetail, SpreadsheetInfo } from '../types';
+import { DashboardData, Member, AttendanceRecord, StaffShift, RegisteredStaff, CheckInResponse, PTDetail, SpreadsheetInfo } from '../types';
 
 export const BRUNEI_TIMEZONE = 'Asia/Brunei';
 
@@ -2587,6 +2587,47 @@ export async function fetchCloudStore(businessName?: string): Promise<GymDataSto
     console.error('fetchCloudStore error:', err);
     return null;
   }
+}
+
+export async function fetchAllStoresAttendance(stores: string[]): Promise<(AttendanceRecord & { storeName: string })[]> {
+  await ensureFirebaseAuth();
+  const allRecords: (AttendanceRecord & { storeName: string })[] = [];
+  const cleanStores = stores.length > 0 ? stores : ['Binti Gym'];
+
+  for (const store of cleanStores) {
+    try {
+      const attColl = getBusinessCollectionRef(store, 'attendance');
+      const snap = await withTimeout(getDocs(attColl), 3000, null as any);
+      if (snap && snap.docs) {
+        for (const docSnap of snap.docs) {
+          const data = docSnap.data();
+          const d = data.timestamp ? new Date(data.timestamp) : new Date();
+          allRecords.push({
+            id: docSnap.id,
+            timestamp: toIsoTimestampString(data.timestamp || data.createdAt || data.updatedAt),
+            time: getBruneiFormattedTime(isNaN(d.getTime()) ? undefined : d),
+            memberId: data.memberId || '',
+            name: data.name || 'Guest',
+            phone: data.phone || '-',
+            plan: data.plan || 'Standard',
+            status: data.status || 'Active',
+            storeName: store,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`Could not fetch attendance for store ${store}:`, e);
+    }
+  }
+
+  // Sort descending by timestamp
+  allRecords.sort((a, b) => {
+    const tA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const tB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return tB - tA;
+  });
+
+  return allRecords;
 }
 
 /**
