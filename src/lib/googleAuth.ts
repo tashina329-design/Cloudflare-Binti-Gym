@@ -64,12 +64,16 @@ const authListeners: Array<{
 
 export function isMobileDevice(): boolean {
   if (typeof navigator === 'undefined') return false;
-  return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
+  const ua = navigator.userAgent || '';
+  const isTouchMac = /Macintosh/i.test(ua) && (navigator.maxTouchPoints > 1 || (navigator as any).msMaxTouchPoints > 1);
+  return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua) || isTouchMac;
 }
 
 export function isIOS(): boolean {
   if (typeof navigator === 'undefined') return false;
-  return /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+  const ua = navigator.userAgent || '';
+  const isTouchMac = /Macintosh/i.test(ua) && (navigator.maxTouchPoints > 1 || (navigator as any).msMaxTouchPoints > 1);
+  return /iPhone|iPad|iPod/i.test(ua) || isTouchMac;
 }
 
 // Helper to ensure GIS script is loaded
@@ -275,6 +279,13 @@ export const setManualAccessToken = async (token: string, email = 'user@google.c
 export const googleSignInRedirect = async (): Promise<void> => {
   isSigningIn = true;
   try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('gym_active_tab', 'sheets');
+      localStorage.setItem('gym_pending_google_redirect', 'true');
+    }
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('gym_active_tab', 'sheets');
+    }
     await signInWithRedirect(auth, firebaseProvider);
   } catch (err: any) {
     console.error('Firebase signInWithRedirect failed:', err);
