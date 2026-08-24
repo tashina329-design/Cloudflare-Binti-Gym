@@ -6,6 +6,7 @@ export interface Member {
   startDate: string;
   endDate: string;
   status: 'Active' | 'Expiring Soon' | 'Expired';
+  registeredStore?: string;
 }
 
 export interface AttendanceRecord {
