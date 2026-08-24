@@ -292,6 +292,24 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Universal Shared Member Directory Banner */}
+      <div className="bg-slate-900/90 border border-emerald-500/30 rounded-xl p-3.5 flex items-center justify-between gap-3 text-xs text-slate-300 shadow-sm">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+            <Users className="w-4 h-4" />
+          </div>
+          <div>
+            <span className="font-semibold text-emerald-300">🌐 Universal Shared Member Directory</span>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              All member registrations, profiles, and renewals are shared in real time across all store terminals. Sales, cash transactions, and attendance logs remain strictly isolated to each store.
+            </p>
+          </div>
+        </div>
+        <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-emerald-400 font-mono bg-emerald-950/60 px-2.5 py-1 rounded border border-emerald-800/40 shrink-0">
+          <CheckCircle2 className="w-3.5 h-3.5" /> Universal Sync Active
+        </div>
+      </div>
+
       {/* Search Bar & Duplicates Quick Filter */}
       <div>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
