@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "binti-gym-pos",
+  "name": "cloudflare-binti-gym",
   "compatibility_date": "2024-11-01",
   "assets": {
     "directory": "./dist",
