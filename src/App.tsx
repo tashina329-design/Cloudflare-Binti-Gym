@@ -13,6 +13,7 @@ import { WalkInTab } from './components/tabs/WalkInTab';
 import { MemberRegistrationTab } from './components/tabs/MemberRegistrationTab';
 import { ExpenseTab } from './components/tabs/ExpenseTab';
 import { GoogleSheetsTab } from './components/tabs/GoogleSheetsTab';
+import { AttendanceTab } from './components/tabs/AttendanceTab';
 import { QuickRenewModal } from './components/QuickRenewModal';
 import { EntranceCheckInView } from './components/EntranceCheckInView';
 import { StaffShiftModal } from './components/StaffShiftModal';
@@ -1561,6 +1562,16 @@ export function App() {
                     };
                   });
                 }}
+              />
+            )}
+
+            {activeTab === 'attendance' && (
+              <AttendanceTab
+                data={dashboardData}
+                currentStore={currentStore}
+                availableStores={availableStores}
+                onDeleteAttendance={handleDeleteAttendance}
+                onSelectMemberForRenewal={(m) => setRenewMember(m)}
               />
             )}
           </div>
