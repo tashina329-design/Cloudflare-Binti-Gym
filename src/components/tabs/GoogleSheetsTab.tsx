@@ -66,7 +66,9 @@ import {
   dbGetStoreSpreadsheet,
   dbSaveStoreSpreadsheet,
   dbClearStoreSpreadsheet,
-  dbClearAllDataToZero
+  dbClearAllDataToZero,
+  dbGetStoreSpreadsheetAuth,
+  dbSaveStoreSpreadsheetAuth
 } from '../../lib/firebaseSync';
 import { DashboardData, Member } from '../../types';
 
@@ -95,6 +97,10 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
   const [customSheetInput, setCustomSheetInput] = useState('');
   const [isSavingCustomSheet, setIsSavingCustomSheet] = useState(false);
   const [isCreatingNewSheet, setIsCreatingNewSheet] = useState(false);
+
+  // Cloud-synced token (from another staff device or computer)
+  const [cloudToken, setCloudToken] = useState<string | null>(null);
+  const [cloudAuthEmail, setCloudAuthEmail] = useState<string | null>(null);
 
   const [lastSynced, setLastSynced] = useState<string | null>(() => {
     return localStorage.getItem(`last_sheets_sync_time_${effectiveStore}`);
@@ -129,7 +135,9 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setUser(res.user);
       setToken(res.accessToken);
       await loadSpreadsheetForStore(res.accessToken, effectiveStore);
-      setSuccessMsg('Successfully connected Google Workspace with provided OAuth token!');
+      // Save cloud auth so other tablets inherit it
+      await dbSaveStoreSpreadsheetAuth(effectiveStore, res.accessToken, res.user);
+      setSuccessMsg('Successfully connected Google Workspace with provided OAuth token and saved for all devices!');
       setShowManualToken(false);
     } catch (err: any) {
       console.error('Failed manual token auth:', err);
@@ -203,11 +211,20 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
     }
   }, []);
 
-  // Preload store spreadsheet from Firestore on mount
+  // Preload store spreadsheet, Webhook URL, and Cloud Auth from Firestore on mount
   useEffect(() => {
     dbGetStoreSpreadsheet(effectiveStore).then((stored) => {
       if (stored) {
         setSpreadsheet(stored);
+      }
+    }).catch(() => {});
+
+    dbGetStoreSpreadsheetAuth(effectiveStore).then((savedAuth) => {
+      if (savedAuth?.token) {
+        setCloudToken(savedAuth.token);
+        if (savedAuth.user?.email) {
+          setCloudAuthEmail(savedAuth.user.email);
+        }
       }
     }).catch(() => {});
   }, [effectiveStore]);
@@ -245,6 +262,11 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
         setUser(result.user);
         setToken(result.accessToken);
         await loadSpreadsheetForStore(result.accessToken, effectiveStore);
+        // Persist token in Firestore so all iPads and devices for this store inherit push permissions
+        await dbSaveStoreSpreadsheetAuth(effectiveStore, result.accessToken, result.user);
+        setCloudToken(result.accessToken);
+        setCloudAuthEmail(result.user.email);
+        setSuccessMsg(`Signed in as ${result.user.email}. Authorization synced across all store devices!`);
       }
     } catch (err: any) {
       console.error('Login error:', err);
@@ -261,7 +283,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       await googleSignInRedirect();
     } catch (err: any) {
       console.error('Redirect sign in error:', err);
-      setErrorMsg(err.message || 'Mobile redirect sign-in failed. Please try the Direct Sheet Link option below.');
+      setErrorMsg(err.message || 'Mobile redirect sign-in failed. Please use Option 3: Apps Script Webhook (recommended for iPad).');
       setIsSigningIn(false);
     }
   };
@@ -274,9 +296,9 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
   };
 
   const handleCreateDedicatedStoreSheet = async () => {
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
     if (!activeToken) {
-      setErrorMsg('Google session expired. Please sign in to Google to create new files in your Google Drive.');
+      setErrorMsg('Google session required to create new files in your Google Drive. Please sign in to Google or use the Apps Script Webhook.');
       return;
     }
 
@@ -301,7 +323,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
     e.preventDefault();
     if (!customSheetInput.trim()) return;
 
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
     setIsSavingCustomSheet(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -327,7 +349,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setSpreadsheet(null);
       setSuccessMsg(`Unlinked spreadsheet for ${effectiveStore}. You can now link or create a new sheet.`);
       setShowConfigOptions(false);
-      let activeToken = token || getAccessToken();
+      let activeToken = token || getAccessToken() || cloudToken;
       if (activeToken) {
         loadSpreadsheetForStore(activeToken, effectiveStore);
       }
@@ -337,9 +359,9 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
   };
 
   const handleTriggerSync = () => {
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
     if (!activeToken) {
-      setErrorMsg('Direct Push to Google Sheets requires Google Sign-In with write permission. Please sign in to your Google Account above or use the Pull from Sheet option.');
+      setErrorMsg('Direct Push to Google Sheets requires Google Sign-In with write permission. Please sign in to your Google Account above.');
       return;
     }
     if (!spreadsheet) {
@@ -351,7 +373,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
   const executeSync = async () => {
     setShowConfirmModal(false);
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
     if (!activeToken || !spreadsheet) {
       setErrorMsg('Google session expired. Please sign in again.');
       return;
@@ -363,6 +385,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
     try {
       await syncDataToGoogleSheets(activeToken, spreadsheet.spreadsheetId, dashboardData);
+
       const nowStr = new Date().toLocaleTimeString('en-US', {
         hour: '2-digit',
         minute: '2-digit',
@@ -710,7 +733,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
 
           {/* Connection Method Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
-            {/* Method A: Google Account Sign-In */}
+            {/* Option 1: Google Account Sign-In */}
             <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-col justify-between space-y-3">
               <div className="space-y-1">
                 <span className="text-xs font-bold text-white flex items-center gap-1.5">
@@ -744,7 +767,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
               </div>
             </div>
 
-            {/* Method B: Direct Google Sheet URL Link (No login required) */}
+            {/* Option 2: Direct Google Sheet URL Link (No login required) */}
             <form onSubmit={handleLinkCustomSheet} className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-col justify-between space-y-3">
               <div className="space-y-1">
                 <span className="text-xs font-bold text-white flex items-center gap-1.5">
