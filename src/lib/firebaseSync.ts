@@ -2481,11 +2481,105 @@ export async function dbSaveStoreSpreadsheet(businessName: string, info: Spreads
   }
 }
 
+export async function dbSaveStoreSpreadsheetAuth(
+  businessName: string,
+  token: string,
+  user?: any
+): Promise<void> {
+  try {
+    const cleanName = (businessName || getStoredBusinessName() || 'Binti Gym').trim();
+    await ensureFirebaseAuth();
+    const bizRef = getBusinessDocRef(cleanName);
+    await setDoc(
+      bizRef,
+      {
+        googleOAuthToken: token,
+        googleOAuthUser: user ? {
+          uid: user.uid || 'google-user',
+          email: user.email || 'connected@google.com',
+          displayName: user.displayName || 'Google Account',
+          photoURL: user.photoURL || null,
+        } : null,
+        googleOAuthUpdatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (e) {
+    console.warn('Error saving store Google OAuth info to Firestore:', e);
+  }
+}
+
+export async function dbGetStoreSpreadsheetAuth(
+  businessName?: string
+): Promise<{ token: string | null; user: any | null }> {
+  try {
+    const cleanName = (businessName || getStoredBusinessName() || 'Binti Gym').trim();
+    await ensureFirebaseAuth();
+    const bizRef = getBusinessDocRef(cleanName);
+    const snap = await getDoc(bizRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      return {
+        token: data?.googleOAuthToken || null,
+        user: data?.googleOAuthUser || null,
+      };
+    }
+  } catch (e) {
+    console.warn('Error getting store Google OAuth info:', e);
+  }
+  return { token: null, user: null };
+}
+
+export async function dbSaveStoreWebhookUrl(businessName: string, webhookUrl: string): Promise<void> {
+  try {
+    const cleanName = (businessName || getStoredBusinessName() || 'Binti Gym').trim();
+    const storeKey = normalizeStoreKey(cleanName);
+    localStorage.setItem(`gym_webhook_${storeKey}`, webhookUrl);
+
+    await ensureFirebaseAuth();
+    const bizRef = getBusinessDocRef(cleanName);
+    await setDoc(
+      bizRef,
+      {
+        appsScriptWebhookUrl: webhookUrl.trim(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (e) {
+    console.warn('Error saving store webhook URL:', e);
+  }
+}
+
+export async function dbGetStoreWebhookUrl(businessName?: string): Promise<string | null> {
+  try {
+    const cleanName = (businessName || getStoredBusinessName() || 'Binti Gym').trim();
+    const storeKey = normalizeStoreKey(cleanName);
+    const local = localStorage.getItem(`gym_webhook_${storeKey}`);
+
+    await ensureFirebaseAuth();
+    const bizRef = getBusinessDocRef(cleanName);
+    const snap = await getDoc(bizRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data?.appsScriptWebhookUrl) {
+        localStorage.setItem(`gym_webhook_${storeKey}`, data.appsScriptWebhookUrl);
+        return data.appsScriptWebhookUrl;
+      }
+    }
+    return local;
+  } catch (e) {
+    console.warn('Error getting store webhook URL:', e);
+    return null;
+  }
+}
+
 export async function dbClearStoreSpreadsheet(businessName: string): Promise<void> {
   try {
     const cleanName = (businessName || getStoredBusinessName() || 'Binti Gym').trim();
     const storeKey = normalizeStoreKey(cleanName);
     localStorage.removeItem(`gym_spreadsheet_${storeKey}`);
+    localStorage.removeItem(`gym_webhook_${storeKey}`);
 
     await ensureFirebaseAuth();
     const bizRef = getBusinessDocRef(cleanName);
@@ -2495,6 +2589,9 @@ export async function dbClearStoreSpreadsheet(businessName: string): Promise<voi
         spreadsheetId: null,
         spreadsheetUrl: null,
         spreadsheetTitle: null,
+        googleOAuthToken: null,
+        googleOAuthUser: null,
+        appsScriptWebhookUrl: null,
         updatedAt: serverTimestamp(),
       },
       { merge: true }
