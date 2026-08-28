@@ -13,7 +13,7 @@ export const firebaseConfig = {
   storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || (appletConfig as any).storageBucket || 'gen-lang-client-0329117938.firebasestorage.app',
   messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || (appletConfig as any).messagingSenderId || '368231596957',
   appId: env.VITE_FIREBASE_APP_ID || (appletConfig as any).appId || '1:368231596957:web:22393ebc9b7ffb85a1e574',
-  firestoreDatabaseId: env.VITE_FIREBASE_DATABASE_ID || (appletConfig as any).firestoreDatabaseId || 'ai-studio-cloudflarestaffp-6a469f2d-6a79-471c-8588-5e439a25f166',
+  firestoreDatabaseId: env.VITE_FIREBASE_DATABASE_ID || (appletConfig as any).firestoreDatabaseId || 'ai-studio-remixcloudflares-0b3e9627-65e1-490b-aea7-629c0a1cae75',
 };
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -31,34 +31,45 @@ export async function ensureFirebaseAuth(): Promise<User | null> {
   if (authInitPromise) return authInitPromise;
 
   authInitPromise = new Promise<User | null>((resolve) => {
-    let resolved = false;
-    const finish = (user: User | null) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(fallbackTimer);
-      resolve(user);
-    };
-
-    // 2-second timeout to prevent any blockage on third-party hosts or restricted domains
-    const fallbackTimer = setTimeout(() => {
-      finish(auth.currentUser || null);
-    }, 2000);
-
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      unsub();
-      if (user) {
-        finish(user);
-      } else {
-        try {
-          const cred = await signInAnonymously(auth);
-          finish(cred.user);
-        } catch (err: any) {
-          // Non-fatal warning on unauthorized domains like vercel.app
-          console.warn('Firebase anonymous auth status (Firestore continues unaffected):', err?.message || err);
-          finish(null);
+    let settled = false;
+    const unsub = onAuthStateChanged(
+      auth,
+      async (user) => {
+        if (user) {
+          if (!settled) {
+            settled = true;
+            unsub();
+            resolve(user);
+          }
+        } else {
+          try {
+            const cred = await signInAnonymously(auth);
+            if (!settled) {
+              settled = true;
+              unsub();
+              resolve(cred.user);
+            }
+          } catch (err: any) {
+            console.warn('Firebase anonymous auth status:', err?.message || err);
+            if (!settled) {
+              settled = true;
+              unsub();
+              authInitPromise = null;
+              resolve(null);
+            }
+          }
+        }
+      },
+      (error) => {
+        console.warn('Firebase auth listener error:', error);
+        if (!settled) {
+          settled = true;
+          unsub();
+          authInitPromise = null;
+          resolve(null);
         }
       }
-    });
+    );
   });
 
   return authInitPromise;
