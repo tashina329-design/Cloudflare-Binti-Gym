@@ -1,20 +1,134 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /businesses/{businessId} {
-      allow read, write: if true;
 
-      match /{allSubcollections=**} {
-        allow read, write: if true;
-      }
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
     }
 
+    // Validation helpers
+    function isValidMember(data) {
+      return data.name is string && data.name.size() > 0 &&
+             data.plan is string && data.plan.size() > 0;
+    }
+
+    function isValidAttendance(data) {
+      return data.timestamp is string && data.timestamp.size() > 0 &&
+             data.name is string && data.name.size() > 0;
+    }
+
+    function isValidSale(data) {
+      return data.timestamp is string && data.timestamp.size() > 0 &&
+             data.category is string &&
+             data.amount is number &&
+             data.paymentMethod is string;
+    }
+
+    function isValidExpense(data) {
+      return data.timestamp is string && data.timestamp.size() > 0 &&
+             data.category is string &&
+             data.amount is number &&
+             data.paymentMethod is string;
+    }
+
+    function isValidStaff(data) {
+      return data.id is string &&
+             data.name is string && data.name.size() > 0 &&
+             data.pin is string && data.pin.size() > 0;
+    }
+
+    function isValidShift(data) {
+      return data.id is string &&
+             data.staffName is string && data.staffName.size() > 0;
+    }
+
+    function isValidBusiness(data) {
+      return data.name is string && data.name.size() > 0;
+    }
+
+    function isValidGymRegistry(data) {
+      return data.stores is list || data.lastEvent is map;
+    }
+
+    function isValidEvent(data) {
+      return data.type is string && data.timestamp is string;
+    }
+
+    // Universal Member Directory
     match /members/{memberId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidMember(request.resource.data);
+      allow update: if isAuthenticated() && isValidMember(request.resource.data);
+      allow delete: if isAuthenticated();
     }
 
-    match /gym/{document=**} {
-      allow read, write: if true;
+    // Global Gym Directory & Registry
+    match /gym/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Business Accounts & Scoped Subcollections
+    match /businesses/{businessId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidBusiness(request.resource.data);
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated();
+
+      match /members/{memberId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidMember(request.resource.data);
+        allow update: if isAuthenticated() && isValidMember(request.resource.data);
+        allow delete: if isAuthenticated();
+      }
+
+      match /attendance/{attendanceId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidAttendance(request.resource.data);
+        allow update: if isAuthenticated();
+        allow delete: if isAuthenticated();
+      }
+
+      match /sales/{saleId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidSale(request.resource.data);
+        allow update: if isAuthenticated();
+        allow delete: if isAuthenticated();
+      }
+
+      match /expenses/{expenseId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidExpense(request.resource.data);
+        allow update: if isAuthenticated();
+        allow delete: if isAuthenticated();
+      }
+
+      match /staff/{staffId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidStaff(request.resource.data);
+        allow update: if isAuthenticated() && isValidStaff(request.resource.data);
+        allow delete: if isAuthenticated();
+      }
+
+      match /shifts/{shiftId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidShift(request.resource.data);
+        allow update: if isAuthenticated() && isValidShift(request.resource.data);
+        allow delete: if isAuthenticated();
+      }
+
+      match /events/{eventId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidEvent(request.resource.data);
+        allow update: if isAuthenticated();
+        allow delete: if isAuthenticated();
+      }
+
+      // Catch-all for any additional subcollections within a business
+      match /{allSubcollections=**} {
+        allow read, write: if isAuthenticated();
+      }
     }
   }
 }
