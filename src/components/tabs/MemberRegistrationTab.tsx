@@ -78,11 +78,11 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
     }
   }, [data.members]);
 
-  // Load all members on-demand when entering the tab if not already populated
-  const loadMembersOnDemand = useCallback(async () => {
+  // Load all members on-demand when entering the tab (cached for 5 min to protect read quota)
+  const loadMembersOnDemand = useCallback(async (forceRefresh = false) => {
     setIsFetchingMembers(true);
     try {
-      const list = await dbFetchAllMembers();
+      const list = await dbFetchAllMembers(forceRefresh);
       setFetchedMembers(list);
     } catch (err) {
       console.warn('Failed to fetch members on-demand:', err);
@@ -92,7 +92,8 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
   }, []);
 
   useEffect(() => {
-    loadMembersOnDemand();
+    // Initial / tab switch load uses 5-minute memory cache (0 Firestore reads if fresh)
+    loadMembersOnDemand(false);
   }, [loadMembersOnDemand]);
 
   // Active member list is the on-demand fetched members
@@ -680,10 +681,10 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
           </div>
 
           <button
-            onClick={loadMembersOnDemand}
+            onClick={() => loadMembersOnDemand(true)}
             disabled={isFetchingMembers}
             className="px-2.5 py-1 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 border border-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
-            title="Refresh member list from Firestore"
+            title="Force refresh member list from Firestore"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isFetchingMembers ? 'animate-spin text-emerald-400' : ''}`} />
             <span>{isFetchingMembers ? 'Loading...' : 'Refresh List'}</span>
