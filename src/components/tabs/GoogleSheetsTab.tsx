@@ -395,7 +395,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
 
     setIsPullingAll(true);
     setErrorMsg(null);
@@ -440,7 +440,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
 
     setIsPullingSales(true);
     setErrorMsg(null);
@@ -468,7 +468,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
 
     setIsPullingExpenses(true);
     setErrorMsg(null);
@@ -496,7 +496,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
 
     setIsPullingAttendance(true);
     setErrorMsg(null);
@@ -524,7 +524,7 @@ export const GoogleSheetsTab: React.FC<GoogleSheetsTabProps> = ({ dashboardData,
       setErrorMsg('Please connect or link a Google Sheet first.');
       return;
     }
-    let activeToken = token || getAccessToken();
+    let activeToken = token || getAccessToken() || cloudToken;
 
     setIsPullingMembers(true);
     setErrorMsg(null);
