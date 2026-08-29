@@ -10,6 +10,8 @@ import {
   updateDoc,
   serverTimestamp,
   query,
+  where,
+  limit,
   orderBy,
 } from 'firebase/firestore';
 import { db, ensureFirebaseAuth } from './firebase';
@@ -567,6 +569,7 @@ export async function seedInitialBusinessData(businessName: string, pin: string,
           doc(globalMembersColl, m.memberId),
           {
             ...m,
+            phoneNormalized: normalizePhoneNumber(m.phone),
             deviceId,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -919,10 +922,22 @@ export function subscribeFirestoreBusiness(
     );
     unsubs.push(unsubMembers);
 
-    // 3. Attendance subcollection listener
+    // Calculate 48-hour timestamp query window for activeDate to capture all Brunei & UTC day records
+    // without reading historical months of data
+    const activeDateObj = new Date(activeDate + 'T00:00:00Z');
+    const validDateObj = isNaN(activeDateObj.getTime()) ? new Date() : activeDateObj;
+    const prevDay = new Date(validDateObj.getTime() - 24 * 60 * 60 * 1000);
+    const nextDay = new Date(validDateObj.getTime() + 24 * 60 * 60 * 1000);
+    const prevDayStr = prevDay.toISOString().split('T')[0];
+    const nextDayStr = nextDay.toISOString().split('T')[0];
+    const minTimestamp = `${prevDayStr}T00:00:00.000Z`;
+    const maxTimestamp = `${nextDayStr}T23:59:59.999Z`;
+
+    // 3. Attendance subcollection listener (Scoped to today / active date window)
     const attRef = getBusinessCollectionRef(cleanName, 'attendance');
+    const qAtt = query(attRef, where('timestamp', '>=', minTimestamp), where('timestamp', '<=', maxTimestamp));
     const unsubAtt = onSnapshot(
-      attRef,
+      qAtt,
       (snap) => {
         liveAttendance = snap.docs.map((d) => {
           const data = d.data();
@@ -938,10 +953,11 @@ export function subscribeFirestoreBusiness(
     );
     unsubs.push(unsubAtt);
 
-    // 4. Sales subcollection listener
+    // 4. Sales subcollection listener (Scoped to today / active date window)
     const salesRef = getBusinessCollectionRef(cleanName, 'sales');
+    const qSales = query(salesRef, where('timestamp', '>=', minTimestamp), where('timestamp', '<=', maxTimestamp));
     const unsubSales = onSnapshot(
-      salesRef,
+      qSales,
       (snap) => {
         liveSales = snap.docs.map((d) => {
           const data = d.data();
@@ -957,10 +973,11 @@ export function subscribeFirestoreBusiness(
     );
     unsubs.push(unsubSales);
 
-    // 5. Expenses subcollection listener
+    // 5. Expenses subcollection listener (Scoped to today / active date window)
     const expRef = getBusinessCollectionRef(cleanName, 'expenses');
+    const qExp = query(expRef, where('timestamp', '>=', minTimestamp), where('timestamp', '<=', maxTimestamp));
     const unsubExp = onSnapshot(
-      expRef,
+      qExp,
       (snap) => {
         liveExpenses = snap.docs.map((d) => {
           const data = d.data();
@@ -1042,6 +1059,46 @@ export async function dbBroadcastEvent(businessName: string, event: SyncEventPay
   }
 }
 
+export function normalizePhoneNumber(phone: string): string {
+  if (!phone) return '';
+  const clean = phone.trim();
+  const digits = clean.replace(/\D/g, '');
+  if (!digits) return clean.toLowerCase();
+
+  // If Brunei prefix 673 is included and total length > 3, strip to standard local digits (e.g. 6738712345 -> 8712345)
+  if (digits.startsWith('673') && digits.length > 3) {
+    return digits.slice(3);
+  }
+  // If leading 0 is included (e.g. 08712345 -> 8712345)
+  if (digits.startsWith('0') && digits.length > 1) {
+    return digits.slice(1);
+  }
+  return digits;
+}
+
+export function getPhoneQueryVariants(rawPhone: string): string[] {
+  const cleanRaw = (rawPhone || '').trim();
+  if (!cleanRaw) return [];
+  const variants = new Set<string>();
+
+  variants.add(cleanRaw);
+  variants.add(cleanRaw.toLowerCase());
+
+  const digits = cleanRaw.replace(/\D/g, '');
+  if (digits) {
+    variants.add(digits);
+    const normalized = normalizePhoneNumber(cleanRaw);
+    if (normalized) variants.add(normalized);
+    if (!digits.startsWith('673')) {
+      variants.add('673' + normalized);
+      variants.add('+673' + normalized);
+      variants.add('+673 ' + normalized);
+    }
+    variants.add('0' + normalized);
+  }
+  return Array.from(variants).filter(Boolean).slice(0, 10);
+}
+
 export function matchesFullPhoneNumber(registeredPhone: string, inputPhone: string): boolean {
   if (!registeredPhone || !inputPhone) return false;
 
@@ -1092,20 +1149,73 @@ export async function dbCheckInPhone(businessName: string, phone: string): Promi
     };
   }
 
-  // 1. Search universal shared members directory
+  const normPhone = normalizePhoneNumber(cleanPhone);
+  const variants = getPhoneQueryVariants(cleanPhone);
   const membersRef = getMembersCollectionRef();
-  let snap = await getDocs(membersRef);
-  let matched = snap.docs
-    .map((d) => ({ id: d.id, ...(d.data() as Member) }))
-    .filter((m) => matchesFullPhoneNumber(m.phone, cleanPhone));
+  let matched: Member[] = [];
 
-  // Fallback to store-level collection if not yet migrated
+  // Step 1: Indexed query by phoneNormalized on universal shared members directory
+  try {
+    const qNorm = query(membersRef, where('phoneNormalized', '==', normPhone), limit(5));
+    const snapNorm = await getDocs(qNorm);
+    if (!snapNorm.empty) {
+      matched = snapNorm.docs.map((d) => ({ id: d.id, ...(d.data() as Member) }));
+    }
+  } catch (err) {
+    console.warn('phoneNormalized query check:', err);
+  }
+
+  // Step 2: If no normalized match, query by raw phone field variants with 'in' filter
+  if (matched.length === 0 && variants.length > 0) {
+    try {
+      const qPhone = query(membersRef, where('phone', 'in', variants), limit(5));
+      const snapPhone = await getDocs(qPhone);
+      if (!snapPhone.empty) {
+        matched = snapPhone.docs.map((d) => ({ id: d.id, ...(d.data() as Member) }));
+      }
+    } catch (err) {
+      console.warn('phone variants query check:', err);
+    }
+  }
+
+  // Step 3: Check store-level collection if not found in global directory
   if (matched.length === 0) {
     const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
-    const storeSnap = await getDocs(storeMembersRef);
-    matched = storeSnap.docs
-      .map((d) => ({ id: d.id, ...(d.data() as Member) }))
-      .filter((m) => matchesFullPhoneNumber(m.phone, cleanPhone));
+    try {
+      const qStoreNorm = query(storeMembersRef, where('phoneNormalized', '==', normPhone), limit(5));
+      const snapStoreNorm = await getDocs(qStoreNorm);
+      if (!snapStoreNorm.empty) {
+        matched = snapStoreNorm.docs.map((d) => ({ id: d.id, ...(d.data() as Member) }));
+      } else if (variants.length > 0) {
+        const qStorePhone = query(storeMembersRef, where('phone', 'in', variants), limit(5));
+        const snapStorePhone = await getDocs(qStorePhone);
+        if (!snapStorePhone.empty) {
+          matched = snapStorePhone.docs.map((d) => ({ id: d.id, ...(d.data() as Member) }));
+        }
+      }
+    } catch (err) {
+      console.warn('Store members query check:', err);
+    }
+  }
+
+  // Step 4: Backward-compatible fallback search for legacy/unmigrated documents
+  if (matched.length === 0) {
+    try {
+      const fullSnap = await getDocs(membersRef);
+      matched = fullSnap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as Member) }))
+        .filter((m) => matchesFullPhoneNumber(m.phone, cleanPhone));
+
+      if (matched.length === 0) {
+        const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
+        const storeFullSnap = await getDocs(storeMembersRef);
+        matched = storeFullSnap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as Member) }))
+          .filter((m) => matchesFullPhoneNumber(m.phone, cleanPhone));
+      }
+    } catch (err) {
+      console.warn('Fallback phone scan error:', err);
+    }
   }
 
   if (matched.length === 0) {
@@ -1115,6 +1225,16 @@ export async function dbCheckInPhone(businessName: string, phone: string): Promi
       message: `No registered member found with phone: "${cleanPhone}". Please enter the exact phone number registered on your account.`,
     };
   }
+
+  // Auto-healing migration: lazily populate phoneNormalized on matching member documents
+  matched.forEach((m) => {
+    if (!m.phoneNormalized && m.phone) {
+      updateDoc(doc(membersRef, m.memberId || m.id), {
+        phoneNormalized: normalizePhoneNumber(m.phone),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    }
+  });
 
   if (matched.length > 1) {
     return {
@@ -1213,19 +1333,57 @@ export async function dbCheckInPhone(businessName: string, phone: string): Promi
 export async function dbCheckInId(businessName: string, memberId: string): Promise<CheckInResponse> {
   await ensureFirebaseAuth();
   const cleanId = memberId.trim();
-  const membersRef = getMembersCollectionRef();
-  let snap = await getDocs(membersRef);
-  let matched = snap.docs
-    .map((d) => ({ id: d.id, ...(d.data() as Member) }))
-    .find((m) => m.memberId.toLowerCase() === cleanId.toLowerCase());
+  if (!cleanId) {
+    return { success: false, notFound: true, message: 'Please enter a valid Member ID.' };
+  }
 
-  // Fallback to store-level collection
+  const membersRef = getMembersCollectionRef();
+  let matched: Member | null = null;
+
+  // Step 1: Direct document lookup (1 single read)
+  try {
+    let docSnap = await getDoc(doc(membersRef, cleanId));
+    if (!docSnap.exists() && cleanId !== cleanId.toUpperCase()) {
+      docSnap = await getDoc(doc(membersRef, cleanId.toUpperCase()));
+    }
+    if (docSnap.exists()) {
+      matched = { id: docSnap.id, ...(docSnap.data() as Member) };
+    }
+  } catch (err) {
+    console.warn('Direct member doc lookup error:', err);
+  }
+
+  // Step 2: Query by memberId field with limit(1) if doc ID differed
   if (!matched) {
-    const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
-    const storeSnap = await getDocs(storeMembersRef);
-    matched = storeSnap.docs
-      .map((d) => ({ id: d.id, ...(d.data() as Member) }))
-      .find((m) => m.memberId.toLowerCase() === cleanId.toLowerCase());
+    try {
+      let qSnap = await getDocs(query(membersRef, where('memberId', '==', cleanId), limit(1)));
+      if (qSnap.empty && cleanId !== cleanId.toUpperCase()) {
+        qSnap = await getDocs(query(membersRef, where('memberId', '==', cleanId.toUpperCase()), limit(1)));
+      }
+      if (!qSnap.empty) {
+        matched = { id: qSnap.docs[0].id, ...(qSnap.docs[0].data() as Member) };
+      }
+    } catch (err) {
+      console.warn('Query memberId error:', err);
+    }
+  }
+
+  // Step 3: Check store-level collection if not found in global directory
+  if (!matched) {
+    try {
+      const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
+      let storeDocSnap = await getDoc(doc(storeMembersRef, cleanId));
+      if (storeDocSnap.exists()) {
+        matched = { id: storeDocSnap.id, ...(storeDocSnap.data() as Member) };
+      } else {
+        const qStoreSnap = await getDocs(query(storeMembersRef, where('memberId', '==', cleanId), limit(1)));
+        if (!qStoreSnap.empty) {
+          matched = { id: qStoreSnap.docs[0].id, ...(qStoreSnap.docs[0].data() as Member) };
+        }
+      }
+    } catch (err) {
+      console.warn('Store member lookup error:', err);
+    }
   }
 
   if (!matched) {
@@ -1536,11 +1694,13 @@ export async function dbRegisterMember(
   const memberId = 'MEM-' + Math.floor(100000 + Math.random() * 900000);
 
   // 1. Save member profile to Universal Shared Collection (/members)
+  const normPhone = normalizePhoneNumber(data.phone);
   const membersColl = getMembersCollectionRef();
   await setDoc(doc(membersColl, memberId), {
     memberId,
     name: data.name,
     phone: data.phone,
+    phoneNormalized: normPhone,
     plan: data.planType,
     startDate: data.startDate,
     endDate: data.endDate,
@@ -1605,12 +1765,16 @@ export async function dbBatchUpsertMembers(
     const docId = existing?.id || existing?.memberId || memberId;
     const status = m.status || getMemberStatus(m.endDate || '');
 
+    const rawPhone = m.phone ? m.phone.trim() : '';
+    const normPhone = normalizePhoneNumber(rawPhone);
+
     await setDoc(
       doc(membersColl, docId),
       {
         memberId,
         name: m.name.trim(),
-        phone: m.phone ? m.phone.trim() : '',
+        phone: rawPhone,
+        phoneNormalized: normPhone,
         plan: m.plan || 'Monthly Pass',
         startDate: m.startDate || getBruneiTodayIsoDate(),
         endDate: m.endDate || '',
@@ -1920,25 +2084,48 @@ export async function dbRenewMember(
 
   // 1. Update member in Universal Shared collection
   const membersColl = getMembersCollectionRef();
-  const snap = await getDocs(membersColl);
-  let memberDoc = snap.docs.find((d) => {
-    const dData = d.data();
-    return dData.memberId === data.memberId || d.id === data.memberId;
-  });
+  let targetDocId: string | null = null;
+  let memberData: any = null;
+
+  try {
+    const directSnap = await getDoc(doc(membersColl, data.memberId));
+    if (directSnap.exists()) {
+      targetDocId = directSnap.id;
+      memberData = directSnap.data();
+    } else {
+      const qSnap = await getDocs(query(membersColl, where('memberId', '==', data.memberId), limit(1)));
+      if (!qSnap.empty) {
+        targetDocId = qSnap.docs[0].id;
+        memberData = qSnap.docs[0].data();
+      }
+    }
+  } catch (err) {
+    console.warn('Error reading member for renewal:', err);
+  }
 
   // Fallback to store-level collection if not found in global
-  if (!memberDoc) {
-    const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
-    const storeSnap = await getDocs(storeMembersColl);
-    memberDoc = storeSnap.docs.find((d) => {
-      const dData = d.data();
-      return dData.memberId === data.memberId || d.id === data.memberId;
-    });
+  if (!targetDocId) {
+    try {
+      const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
+      const storeSnap = await getDoc(doc(storeMembersColl, data.memberId));
+      if (storeSnap.exists()) {
+        targetDocId = storeSnap.id;
+        memberData = storeSnap.data();
+      } else {
+        const qStoreSnap = await getDocs(query(storeMembersColl, where('memberId', '==', data.memberId), limit(1)));
+        if (!qStoreSnap.empty) {
+          targetDocId = qStoreSnap.docs[0].id;
+          memberData = qStoreSnap.docs[0].data();
+        }
+      }
+    } catch (err) {
+      console.warn('Error reading store member for renewal:', err);
+    }
   }
 
   let currentEnd = new Date();
-  if (memberDoc) {
-    const existingEnd = new Date(memberDoc.data().endDate);
+  if (memberData && memberData.endDate) {
+    const existingEnd = new Date(memberData.endDate);
     if (!isNaN(existingEnd.getTime()) && existingEnd.getTime() > currentEnd.getTime()) {
       currentEnd = existingEnd;
     }
@@ -1946,21 +2133,26 @@ export async function dbRenewMember(
 
   currentEnd.setMonth(currentEnd.getMonth() + 1);
   const newEndDate = getBruneiTodayIsoDate(currentEnd);
+  const finalDocId = targetDocId || data.memberId;
 
-  if (memberDoc) {
-    await setDoc(
-      doc(membersColl, memberDoc.id),
-      {
-        endDate: newEndDate,
-        plan: data.planType,
-        status: 'Active',
-        lastRenewedStore: businessName,
-        updatedAt: serverTimestamp(),
-        deviceId,
-      },
-      { merge: true }
-    );
+  const phoneNorm = memberData?.phone ? normalizePhoneNumber(memberData.phone) : undefined;
+  const updatePayload: any = {
+    endDate: newEndDate,
+    plan: data.planType,
+    status: 'Active',
+    lastRenewedStore: businessName,
+    updatedAt: serverTimestamp(),
+    deviceId,
+  };
+  if (phoneNorm) {
+    updatePayload.phoneNormalized = phoneNorm;
   }
+
+  await setDoc(
+    doc(membersColl, finalDocId),
+    updatePayload,
+    { merge: true }
+  );
 
   // 2. Log renewal sales income strictly to the CURRENT STORE
   const salesColl = getBusinessCollectionRef(businessName, 'sales');
@@ -2164,13 +2356,9 @@ export async function dbDeleteMember(businessName: string, memberId: string) {
     if (cleanId) {
       deletePromises.push(deleteDoc(doc(membersColl, cleanId)).catch(() => {}));
     }
-
-    const snap = await getDocs(membersColl);
-    for (const d of snap.docs) {
-      const data = d.data();
-      const dMemId = (data.memberId || '').toString().trim().toLowerCase();
-      const dDocId = d.id.trim().toLowerCase();
-      if (dMemId === cleanIdLower || dDocId === cleanIdLower) {
+    const qSnap = await getDocs(query(membersColl, where('memberId', '==', cleanId), limit(1)));
+    for (const d of qSnap.docs) {
+      if (d.id !== cleanId) {
         deletePromises.push(deleteDoc(doc(membersColl, d.id)).catch(() => {}));
       }
     }
@@ -2184,13 +2372,9 @@ export async function dbDeleteMember(businessName: string, memberId: string) {
     if (cleanId) {
       deletePromises.push(deleteDoc(doc(storeMembersColl, cleanId)).catch(() => {}));
     }
-
-    const storeSnap = await getDocs(storeMembersColl);
-    for (const d of storeSnap.docs) {
-      const data = d.data();
-      const dMemId = (data.memberId || '').toString().trim().toLowerCase();
-      const dDocId = d.id.trim().toLowerCase();
-      if (dMemId === cleanIdLower || dDocId === cleanIdLower) {
+    const storeQSnap = await getDocs(query(storeMembersColl, where('memberId', '==', cleanId), limit(1)));
+    for (const d of storeQSnap.docs) {
+      if (d.id !== cleanId) {
         deletePromises.push(deleteDoc(doc(storeMembersColl, d.id)).catch(() => {}));
       }
     }
@@ -2252,31 +2436,42 @@ export async function dbUpdateMember(
     sub.emit();
   });
 
+  const normPhone = updates.phone !== undefined ? normalizePhoneNumber(updates.phone) : undefined;
+  const updatePayload: any = {
+    ...updates,
+    updatedAt: serverTimestamp(),
+  };
+  if (normPhone !== undefined) {
+    updatePayload.phoneNormalized = normPhone;
+  }
+
   // 2. Update in Universal Shared collection (/members)
   const membersColl = getMembersCollectionRef();
-  const snap = await getDocs(membersColl);
-  const matchedDocs = snap.docs.filter((d) => {
-    const data = d.data();
-    const dMemId = (data.memberId || '').toString().trim().toLowerCase();
-    const dDocId = d.id.trim().toLowerCase();
-    return dMemId === cleanIdLower || dDocId === cleanIdLower;
-  });
+  let targetDocId: string | null = null;
 
-  if (matchedDocs.length > 0) {
-    for (const d of matchedDocs) {
-      await updateDoc(doc(membersColl, d.id), {
-        ...updates,
-        updatedAt: serverTimestamp(),
-      }).catch(() => {});
+  try {
+    const docSnap = await getDoc(doc(membersColl, cleanId));
+    if (docSnap.exists()) {
+      targetDocId = docSnap.id;
+    } else {
+      const qSnap = await getDocs(query(membersColl, where('memberId', '==', cleanId), limit(1)));
+      if (!qSnap.empty) {
+        targetDocId = qSnap.docs[0].id;
+      }
     }
+  } catch (err) {
+    console.warn('Error reading member for update:', err);
+  }
+
+  if (targetDocId) {
+    await updateDoc(doc(membersColl, targetDocId), updatePayload).catch(() => {});
   } else {
     await setDoc(
       doc(membersColl, cleanId),
       {
         memberId: cleanId,
-        ...updates,
+        ...updatePayload,
         registeredStore: businessName,
-        updatedAt: serverTimestamp(),
       },
       { merge: true }
     ).catch(() => {});
@@ -2285,16 +2480,13 @@ export async function dbUpdateMember(
   // Also update store-level copy if exists
   try {
     const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
-    const storeSnap = await getDocs(storeMembersColl);
-    for (const d of storeSnap.docs) {
-      const data = d.data();
-      const dMemId = (data.memberId || '').toString().trim().toLowerCase();
-      const dDocId = d.id.trim().toLowerCase();
-      if (dMemId === cleanIdLower || dDocId === cleanIdLower) {
-        await updateDoc(doc(storeMembersColl, d.id), {
-          ...updates,
-          updatedAt: serverTimestamp(),
-        }).catch(() => {});
+    const storeDocSnap = await getDoc(doc(storeMembersColl, cleanId));
+    if (storeDocSnap.exists()) {
+      await updateDoc(doc(storeMembersColl, cleanId), updatePayload).catch(() => {});
+    } else {
+      const storeQSnap = await getDocs(query(storeMembersColl, where('memberId', '==', cleanId), limit(1)));
+      if (!storeQSnap.empty) {
+        await updateDoc(doc(storeMembersColl, storeQSnap.docs[0].id), updatePayload).catch(() => {});
       }
     }
   } catch {}
