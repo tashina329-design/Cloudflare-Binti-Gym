@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Search,
   UserPlus,
@@ -16,9 +16,11 @@ import {
   Users,
   Edit2,
   X,
-  Save
+  Save,
+  RefreshCw
 } from 'lucide-react';
 import { DashboardData, Member } from '../../types';
+import { dbFetchAllMembers } from '../../lib/firebaseSync';
 
 interface MemberRegistrationTabProps {
   data: DashboardData;
@@ -64,6 +66,37 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterView, setFilterView] = useState<'all' | 'duplicates'>('all');
+  
+  // Local members state loaded on-demand to prevent continuous Firestore onSnapshot reads
+  const [fetchedMembers, setFetchedMembers] = useState<Member[]>(() => data.members || []);
+  const [isFetchingMembers, setIsFetchingMembers] = useState(false);
+
+  // Sync with data.members if provided by parent/cache
+  useEffect(() => {
+    if (data.members && data.members.length > 0) {
+      setFetchedMembers(data.members);
+    }
+  }, [data.members]);
+
+  // Load all members on-demand when entering the tab if not already populated
+  const loadMembersOnDemand = useCallback(async () => {
+    setIsFetchingMembers(true);
+    try {
+      const list = await dbFetchAllMembers();
+      setFetchedMembers(list);
+    } catch (err) {
+      console.warn('Failed to fetch members on-demand:', err);
+    } finally {
+      setIsFetchingMembers(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadMembersOnDemand();
+  }, [loadMembersOnDemand]);
+
+  // Active member list is the on-demand fetched members
+  const effectiveMembers = fetchedMembers;
   
   // Edit member modal state
   const [editingMember, setEditingMember] = useState<Member | null>(null);
@@ -136,7 +169,7 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
     const matches: { member: Member; reason: 'phone' | 'name' | 'both' }[] = [];
     const seen = new Set<string>();
 
-    for (const m of data.members || []) {
+    for (const m of effectiveMembers) {
       const mNormPhone = normalizePhone(m.phone);
       const mNormName = normalizeName(m.name);
 
@@ -162,12 +195,12 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
     }
 
     return matches;
-  }, [name, phone, data.members]);
+  }, [name, phone, effectiveMembers]);
 
   // Directory-wide duplicate detection
   const duplicatePhoneMap = useMemo(() => {
     const map = new Map<string, Member[]>();
-    for (const m of data.members || []) {
+    for (const m of effectiveMembers) {
       const norm = normalizePhone(m.phone);
       if (norm && norm.length >= 4) {
         if (!map.has(norm)) map.set(norm, []);
@@ -175,11 +208,11 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
       }
     }
     return map;
-  }, [data.members]);
+  }, [effectiveMembers]);
 
   const duplicateNameMap = useMemo(() => {
     const map = new Map<string, Member[]>();
-    for (const m of data.members || []) {
+    for (const m of effectiveMembers) {
       const norm = normalizeName(m.name);
       if (norm && norm.length >= 2) {
         if (!map.has(norm)) map.set(norm, []);
@@ -187,7 +220,7 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
       }
     }
     return map;
-  }, [data.members]);
+  }, [effectiveMembers]);
 
   const duplicateMemberMap = useMemo(() => {
     const dupMap = new Map<string, { member: Member; reasons: string[] }>();
@@ -252,6 +285,8 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
       setName('');
       setPhone('');
       setIgnoreDuplicateWarning(false);
+      // Refresh local list on-demand
+      loadMembersOnDemand();
       setTimeout(() => setSuccessMsg(null), 5000);
     } catch (err: any) {
       alert('Failed to register member: ' + (err.message || err));
@@ -269,7 +304,7 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
 
   // Search and filter logic
   const filteredMembers = useMemo(() => {
-    let list = data.members || [];
+    let list = effectiveMembers;
 
     if (filterView === 'duplicates') {
       list = list.filter((m) => duplicateMemberMap.has(m.memberId));
@@ -288,7 +323,7 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
     }
 
     return list;
-  }, [data.members, filterView, searchQuery, duplicateMemberMap]);
+  }, [effectiveMembers, filterView, searchQuery, duplicateMemberMap]);
 
   return (
     <div className="space-y-6">
@@ -310,7 +345,7 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
               }`}
             >
               <Users className="w-3.5 h-3.5" />
-              All Members ({data.members ? data.members.length : 0})
+              All Members ({effectiveMembers.length})
             </button>
 
             <button
@@ -643,6 +678,16 @@ export const MemberRegistrationTab: React.FC<MemberRegistrationTabProps> = ({
               {filteredMembers.length} displayed
             </span>
           </div>
+
+          <button
+            onClick={loadMembersOnDemand}
+            disabled={isFetchingMembers}
+            className="px-2.5 py-1 text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 border border-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Refresh member list from Firestore"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isFetchingMembers ? 'animate-spin text-emerald-400' : ''}`} />
+            <span>{isFetchingMembers ? 'Loading...' : 'Refresh List'}</span>
+          </button>
         </div>
 
         {/* Desktop Table View */}
