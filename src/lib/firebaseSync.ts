@@ -1154,27 +1154,7 @@ export async function dbCheckInPhone(businessName: string, phone: string): Promi
     }
   }
 
-  // Step 3: Check store-level collection if not found in global directory
-  if (matched.length === 0) {
-    const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
-    try {
-      const qStoreNorm = query(storeMembersRef, where('phoneNormalized', '==', normPhone), limit(5));
-      const snapStoreNorm = await getDocs(qStoreNorm);
-      if (!snapStoreNorm.empty) {
-        matched = snapStoreNorm.docs.map((d) => ({ id: d.id, ...(d.data() as Member) }));
-      } else if (variants.length > 0) {
-        const qStorePhone = query(storeMembersRef, where('phone', 'in', variants), limit(5));
-        const snapStorePhone = await getDocs(qStorePhone);
-        if (!snapStorePhone.empty) {
-          matched = snapStorePhone.docs.map((d) => ({ id: d.id, ...(d.data() as Member) }));
-        }
-      }
-    } catch (err) {
-      console.warn('Store members query check:', err);
-    }
-  }
-
-  // If not found across normalized and variant queries, return not found immediately
+  // If not found across normalized and variant queries on universal /members, return not found immediately
   // to protect Firestore read quota (0 full collection scans).
   if (matched.length === 0) {
     return {
@@ -1323,24 +1303,6 @@ export async function dbCheckInId(businessName: string, memberId: string): Promi
       }
     } catch (err) {
       console.warn('Query memberId error:', err);
-    }
-  }
-
-  // Step 3: Check store-level collection if not found in global directory
-  if (!matched) {
-    try {
-      const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
-      let storeDocSnap = await getDoc(doc(storeMembersRef, cleanId));
-      if (storeDocSnap.exists()) {
-        matched = { id: storeDocSnap.id, ...(storeDocSnap.data() as Member) };
-      } else {
-        const qStoreSnap = await getDocs(query(storeMembersRef, where('memberId', '==', cleanId), limit(1)));
-        if (!qStoreSnap.empty) {
-          matched = { id: qStoreSnap.docs[0].id, ...(qStoreSnap.docs[0].data() as Member) };
-        }
-      }
-    } catch (err) {
-      console.warn('Store member lookup error:', err);
     }
   }
 
@@ -1668,6 +1630,19 @@ export async function dbRegisterMember(
     deviceId,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
+  });
+
+  // Keep in-memory cache updated with newly registered member
+  updateMemberInCache({
+    memberId,
+    name: data.name,
+    phone: data.phone,
+    phoneNormalized: normPhone,
+    plan: data.planType,
+    startDate: data.startDate,
+    endDate: data.endDate,
+    status: getMemberStatus(data.endDate),
+    registeredStore: businessName,
   });
 
   // 2. Save membership sale strictly to the current store sales log (/businesses/{businessName}/sales)
@@ -2061,26 +2036,6 @@ export async function dbRenewMember(
     console.warn('Error reading member for renewal:', err);
   }
 
-  // Fallback to store-level collection if not found in global
-  if (!targetDocId) {
-    try {
-      const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
-      const storeSnap = await getDoc(doc(storeMembersColl, data.memberId));
-      if (storeSnap.exists()) {
-        targetDocId = storeSnap.id;
-        memberData = storeSnap.data();
-      } else {
-        const qStoreSnap = await getDocs(query(storeMembersColl, where('memberId', '==', data.memberId), limit(1)));
-        if (!qStoreSnap.empty) {
-          targetDocId = qStoreSnap.docs[0].id;
-          memberData = qStoreSnap.docs[0].data();
-        }
-      }
-    } catch (err) {
-      console.warn('Error reading store member for renewal:', err);
-    }
-  }
-
   let currentEnd = new Date();
   if (memberData && memberData.endDate) {
     const existingEnd = new Date(memberData.endDate);
@@ -2111,6 +2066,14 @@ export async function dbRenewMember(
     updatePayload,
     { merge: true }
   );
+
+  // Update in-memory cache
+  updateMemberInCache({
+    memberId: finalDocId,
+    endDate: newEndDate,
+    plan: data.planType,
+    status: 'Active',
+  });
 
   // 2. Log renewal sales income strictly to the CURRENT STORE
   const salesColl = getBusinessCollectionRef(businessName, 'sales');
@@ -2324,20 +2287,11 @@ export async function dbDeleteMember(businessName: string, memberId: string) {
     console.warn('Error deleting from /members:', err);
   }
 
-  // 3. Also delete from store-level collection if legacy docs exist
-  try {
-    const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
-    if (cleanId) {
-      deletePromises.push(deleteDoc(doc(storeMembersColl, cleanId)).catch(() => {}));
-    }
-    const storeQSnap = await getDocs(query(storeMembersColl, where('memberId', '==', cleanId), limit(1)));
-    for (const d of storeQSnap.docs) {
-      if (d.id !== cleanId) {
-        deletePromises.push(deleteDoc(doc(storeMembersColl, d.id)).catch(() => {}));
-      }
-    }
-  } catch (err) {
-    console.warn('Error deleting from legacy store collection:', err);
+  // Remove from in-memory cache
+  if (cachedMembersList) {
+    cachedMembersList = cachedMembersList.filter(
+      (m) => (m.memberId || '').trim().toLowerCase() !== cleanIdLower
+    );
   }
 
   await Promise.allSettled(deletePromises);
@@ -2435,19 +2389,17 @@ export async function dbUpdateMember(
     ).catch(() => {});
   }
 
-  // Also update store-level copy if exists
-  try {
-    const storeMembersColl = getBusinessCollectionRef(businessName, 'members');
-    const storeDocSnap = await getDoc(doc(storeMembersColl, cleanId));
-    if (storeDocSnap.exists()) {
-      await updateDoc(doc(storeMembersColl, cleanId), updatePayload).catch(() => {});
-    } else {
-      const storeQSnap = await getDocs(query(storeMembersColl, where('memberId', '==', cleanId), limit(1)));
-      if (!storeQSnap.empty) {
-        await updateDoc(doc(storeMembersColl, storeQSnap.docs[0].id), updatePayload).catch(() => {});
-      }
-    }
-  } catch {}
+  // Update in-memory cache directly
+  updateMemberInCache({
+    memberId: cleanId,
+    name: updates.name,
+    phone: updates.phone,
+    phoneNormalized: normPhone,
+    plan: updates.plan,
+    startDate: updates.startDate,
+    endDate: updates.endDate,
+    status: updates.endDate ? getMemberStatus(updates.endDate) : undefined,
+  } as Member);
 
   dbBroadcastEvent(businessName, {
     type: 'membership',
@@ -2570,17 +2522,51 @@ export async function dbClearAllDataToZero(businessName: string) {
   });
 }
 
+// In-memory caching for Member Directory to prevent accidental repetitive Firestore reads
+let cachedMembersList: Member[] | null = null;
+let cachedMembersTimestamp = 0;
+const MEMBERS_CACHE_TTL_MS = 5 * 60 * 1000; // 5-minute memory cache
+
+export function invalidateMembersCache() {
+  cachedMembersList = null;
+  cachedMembersTimestamp = 0;
+}
+
+export function updateMemberInCache(updated: Partial<Member> & { memberId: string }) {
+  if (!cachedMembersList) return;
+  const clean = (updated.memberId || '').trim().toLowerCase();
+  const idx = cachedMembersList.findIndex(
+    (m) => (m.memberId || '').trim().toLowerCase() === clean
+  );
+  if (idx >= 0) {
+    cachedMembersList[idx] = { ...cachedMembersList[idx], ...updated };
+  } else {
+    cachedMembersList.unshift(updated as Member);
+  }
+}
+
+export function removeMemberFromCache(memberId: string) {
+  if (!cachedMembersList) return;
+  const clean = (memberId || '').trim().toLowerCase();
+  cachedMembersList = cachedMembersList.filter(
+    (m) => (m.memberId || '').trim().toLowerCase() !== clean
+  );
+}
+
 /**
  * Loads all registered members on demand from the universal shared collection (/members).
- * This replaces the continuous global onSnapshot listener so the member database is only
- * read when the operator explicitly accesses the Member Directory/Registration page.
+ * Protected with a 5-minute in-memory cache and TTL to prevent accidental excessive
+ * read quota consumption on rapid tab switches or accidental reloads.
  */
-export async function dbFetchAllMembers(businessName?: string): Promise<Member[]> {
+export async function dbFetchAllMembers(forceRefresh = false): Promise<Member[]> {
+  if (!forceRefresh && cachedMembersList && Date.now() - cachedMembersTimestamp < MEMBERS_CACHE_TTL_MS) {
+    return cachedMembersList;
+  }
+
   await ensureFirebaseAuth();
-  const cleanName = (businessName || getStoredBusinessName() || 'Binti Gym').trim();
   const membersColl = getMembersCollectionRef();
   const snap = await getDocs(membersColl);
-  let members: Member[] = snap.docs.map((d) => {
+  const members: Member[] = snap.docs.map((d) => {
     const data = d.data();
     return {
       memberId: data.memberId || d.id,
@@ -2595,28 +2581,8 @@ export async function dbFetchAllMembers(businessName?: string): Promise<Member[]
     };
   });
 
-  // Fallback to legacy store collection if shared is empty
-  if (members.length === 0) {
-    try {
-      const storeMembersColl = getBusinessCollectionRef(cleanName, 'members');
-      const storeSnap = await getDocs(storeMembersColl);
-      members = storeSnap.docs.map((d) => {
-        const data = d.data();
-        return {
-          memberId: data.memberId || d.id,
-          name: data.name || '',
-          phone: data.phone || '',
-          phoneNormalized: data.phoneNormalized || '',
-          plan: data.plan || '',
-          startDate: data.startDate || '',
-          endDate: data.endDate || '',
-          status: getMemberStatus(data.endDate),
-          registeredStore: data.registeredStore,
-        };
-      });
-    } catch {}
-  }
-
+  cachedMembersList = members;
+  cachedMembersTimestamp = Date.now();
   return members;
 }
 
@@ -2848,11 +2814,7 @@ export async function fetchCloudStore(businessName?: string): Promise<GymDataSto
 
     // Fetch universal shared members directory
     const membersSnap = await getDocs(getMembersCollectionRef());
-    let members: Member[] = membersSnap.docs.map((d) => d.data() as Member);
-    if (members.length === 0) {
-      const storeMembersSnap = await getDocs(getBusinessCollectionRef(biz, 'members'));
-      members = storeMembersSnap.docs.map((d) => d.data() as Member);
-    }
+    const members: Member[] = membersSnap.docs.map((d) => d.data() as Member);
 
     // Fetch attendance subcollection
     const attSnap = await getDocs(getBusinessCollectionRef(biz, 'attendance'));
