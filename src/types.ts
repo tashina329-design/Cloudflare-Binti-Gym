@@ -1,7 +1,9 @@
 export interface Member {
+  id?: string;
   memberId: string;
   name: string;
   phone: string;
+  phoneNormalized?: string;
   plan: string;
   startDate: string;
   endDate: string;
