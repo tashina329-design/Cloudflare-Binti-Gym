@@ -898,32 +898,9 @@ export function subscribeFirestoreBusiness(
     );
     unsubs.push(unsubBiz);
 
-    // 2. Universal Shared Members Directory listener (Shared across all registered stores)
-    const membersRef = getMembersCollectionRef();
-    const unsubMembers = onSnapshot(
-      membersRef,
-      (snap) => {
-        liveMembers = snap.docs.map((d) => {
-          const data = d.data();
-          return {
-            memberId: data.memberId || d.id,
-            name: data.name || '',
-            phone: data.phone || '',
-            plan: data.plan || '',
-            startDate: data.startDate || '',
-            endDate: data.endDate || '',
-            status: getMemberStatus(data.endDate, activeDate),
-            registeredStore: data.registeredStore,
-          };
-        });
-        emitDashboard();
-      },
-      (err) => console.warn('Shared members listener error:', err)
-    );
-    unsubs.push(unsubMembers);
-
-    // Calculate 48-hour timestamp query window for activeDate to capture all Brunei & UTC day records
-    // without reading historical months of data
+    // 2. Attendance subcollection listener (Scoped to today / active date window)
+    // Note: The global /members collection is loaded on-demand when accessing the Member Directory
+    // to strictly prevent continuous streaming of the entire member database during routine POS operations.
     const activeDateObj = new Date(activeDate + 'T00:00:00Z');
     const validDateObj = isNaN(activeDateObj.getTime()) ? new Date() : activeDateObj;
     const prevDay = new Date(validDateObj.getTime() - 24 * 60 * 60 * 1000);
@@ -933,7 +910,6 @@ export function subscribeFirestoreBusiness(
     const minTimestamp = `${prevDayStr}T00:00:00.000Z`;
     const maxTimestamp = `${nextDayStr}T23:59:59.999Z`;
 
-    // 3. Attendance subcollection listener (Scoped to today / active date window)
     const attRef = getBusinessCollectionRef(cleanName, 'attendance');
     const qAtt = query(attRef, where('timestamp', '>=', minTimestamp), where('timestamp', '<=', maxTimestamp));
     const unsubAtt = onSnapshot(
@@ -1198,26 +1174,8 @@ export async function dbCheckInPhone(businessName: string, phone: string): Promi
     }
   }
 
-  // Step 4: Backward-compatible fallback search for legacy/unmigrated documents
-  if (matched.length === 0) {
-    try {
-      const fullSnap = await getDocs(membersRef);
-      matched = fullSnap.docs
-        .map((d) => ({ id: d.id, ...(d.data() as Member) }))
-        .filter((m) => matchesFullPhoneNumber(m.phone, cleanPhone));
-
-      if (matched.length === 0) {
-        const storeMembersRef = getBusinessCollectionRef(businessName, 'members');
-        const storeFullSnap = await getDocs(storeMembersRef);
-        matched = storeFullSnap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Member) }))
-          .filter((m) => matchesFullPhoneNumber(m.phone, cleanPhone));
-      }
-    } catch (err) {
-      console.warn('Fallback phone scan error:', err);
-    }
-  }
-
+  // If not found across normalized and variant queries, return not found immediately
+  // to protect Firestore read quota (0 full collection scans).
   if (matched.length === 0) {
     return {
       success: false,
@@ -2610,6 +2568,56 @@ export async function dbClearAllDataToZero(businessName: string) {
     message: 'All transactions, attendances, expenses, and registered members have been completely wiped to zero.',
     timestamp: getBruneiFormattedTime(new Date(), true),
   });
+}
+
+/**
+ * Loads all registered members on demand from the universal shared collection (/members).
+ * This replaces the continuous global onSnapshot listener so the member database is only
+ * read when the operator explicitly accesses the Member Directory/Registration page.
+ */
+export async function dbFetchAllMembers(businessName?: string): Promise<Member[]> {
+  await ensureFirebaseAuth();
+  const cleanName = (businessName || getStoredBusinessName() || 'Binti Gym').trim();
+  const membersColl = getMembersCollectionRef();
+  const snap = await getDocs(membersColl);
+  let members: Member[] = snap.docs.map((d) => {
+    const data = d.data();
+    return {
+      memberId: data.memberId || d.id,
+      name: data.name || '',
+      phone: data.phone || '',
+      phoneNormalized: data.phoneNormalized || '',
+      plan: data.plan || '',
+      startDate: data.startDate || '',
+      endDate: data.endDate || '',
+      status: getMemberStatus(data.endDate),
+      registeredStore: data.registeredStore,
+    };
+  });
+
+  // Fallback to legacy store collection if shared is empty
+  if (members.length === 0) {
+    try {
+      const storeMembersColl = getBusinessCollectionRef(cleanName, 'members');
+      const storeSnap = await getDocs(storeMembersColl);
+      members = storeSnap.docs.map((d) => {
+        const data = d.data();
+        return {
+          memberId: data.memberId || d.id,
+          name: data.name || '',
+          phone: data.phone || '',
+          phoneNormalized: data.phoneNormalized || '',
+          plan: data.plan || '',
+          startDate: data.startDate || '',
+          endDate: data.endDate || '',
+          status: getMemberStatus(data.endDate),
+          registeredStore: data.registeredStore,
+        };
+      });
+    } catch {}
+  }
+
+  return members;
 }
 
 // -------------------------------------------------------------
